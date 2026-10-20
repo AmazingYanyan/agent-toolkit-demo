@@ -1,0 +1,25 @@
+{
+  "name": "ai-agent-demo-platform",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI 与 Agent 技术原理交互式演示平台（本地运行，真实调用）",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "preview": "npm run build && node server/index.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

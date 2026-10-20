@@ -1,0 +1,93 @@
+{
+  "version": "demo-2026.10-v1",
+  "note": "本库所有企业与财务数据均为教学虚构数据，不代表任何真实客户信息。",
+  "companies": [
+    {
+      "company_id": "DEMO001",
+      "name": "星河科技有限公司（虚构）",
+      "registered_capital": 5000,
+      "capital_unit": "万元",
+      "status": "存续",
+      "established": "2016-04-12",
+      "industry": "软件和信息技术服务业",
+      "source": "本地演示工商库",
+      "updated_at": "2026-03-31",
+      "financials": [
+        {
+          "year": 2024,
+          "revenue": 1000,
+          "total_assets": 900,
+          "total_liabilities": 600,
+          "operating_cash_flow": 40,
+          "unit": "万元"
+        },
+        {
+          "year": 2025,
+          "revenue": 800,
+          "total_assets": 1000,
+          "total_liabilities": 750,
+          "operating_cash_flow": -100,
+          "unit": "万元"
+        }
+      ]
+    },
+    {
+      "company_id": "DEMO002",
+      "name": "晨光制造有限公司（虚构）",
+      "registered_capital": 3000,
+      "capital_unit": "万元",
+      "status": "存续",
+      "established": "2011-09-08",
+      "industry": "通用设备制造业",
+      "source": "本地演示工商库",
+      "updated_at": "2026-03-31",
+      "financials": [
+        {
+          "year": 2024,
+          "revenue": 1000,
+          "total_assets": 950,
+          "total_liabilities": 420,
+          "operating_cash_flow": 120,
+          "unit": "万元"
+        },
+        {
+          "year": 2025,
+          "revenue": 1200,
+          "total_assets": 1000,
+          "total_liabilities": 400,
+          "operating_cash_flow": 150,
+          "unit": "万元"
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "R01",
+      "name": "偿债压力关注",
+      "condition": "资产负债率 > 70%",
+      "metric": "debt_ratio",
+      "op": "gt",
+      "threshold": 70,
+      "hint": "提示关注偿债压力"
+    },
+    {
+      "id": "R02",
+      "name": "经营变化关注",
+      "condition": "营业收入同比下降 > 15%",
+      "metric": "revenue_yoy",
+      "op": "lt",
+      "threshold": -15,
+      "hint": "提示关注经营变化"
+    },
+    {
+      "id": "R03",
+      "name": "现金流关注",
+      "condition": "经营活动现金流净额 < 0",
+      "metric": "operating_cash_flow",
+      "op": "lt",
+      "threshold": 0,
+      "hint": "提示关注现金流"
+    }
+  ]
+}

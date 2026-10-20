@@ -1,0 +1,81 @@
+{
+  "baseUrl": "https://ws-mec6kz71ur1bxnwr.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "apiKey": "sk-ws-H.PIELHEM.hZGG.MEUCIQC7-4ee-4gIVHOZJ8LQgFZW7KqfzDI-jh8m_ofG9Ve6GQIgXpbGEMXP0YJqyy_CfdbLXU9NitzCwia0JJw4eN8GKDw",
+  "model": "deepseek-v4-flash-0731",
+  "temperature": 0.2,
+  "timeoutMs": 90000,
+  "maxToolRounds": 4,
+  "currency": "元",
+  "embedding": {
+    "enabled": true,
+    "baseUrl": "https://ws-mec6kz71ur1bxnwr.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "apiKey": "sk-ws-H.PIELHEM.hZGG.MEUCIQC7-4ee-4gIVHOZJ8LQgFZW7KqfzDI-jh8m_ofG9Ve6GQIgXpbGEMXP0YJqyy_CfdbLXU9NitzCwia0JJw4eN8GKDw",
+    "model": "qwen3.7-text-embedding-flash",
+    "dimensions": 0,
+    "batchSize": 10
+  },
+  "retrieval": {
+    "mode": "hybrid",
+    "vectorWeight": 0.6,
+    "topK": 4,
+    "chunkSize": 320
+  },
+  "mcpServers": [
+    {
+      "id": "demo",
+      "label": "演示工商库（本地）",
+      "short": "演示 MCP",
+      "type": "stdio",
+      "command": "/Users/eddie/.workbuddy/binaries/node/versions/22.22.2-6/bin/node",
+      "args": [
+        "/Users/eddie/Documents/WorkBuddy/Agent概念科普程序/server/mcp/company-server.mjs"
+      ],
+      "enabled": true,
+      "builtin": true
+    },
+    {
+      "id": "ifind",
+      "label": "同花顺 iFinD · 证券数据",
+      "short": "同花顺 iFinD",
+      "type": "http",
+      "url": "https://api-mcp.51ifind.com:8643/ds-mcp-servers/hexin-ifind-ds-mcp",
+      "headers": {
+        "Authorization": "eyJraWQiOiJtY3AtYXBpIiwidWlkIjoiODczNzA0NzY5IiwiYWxnIjoiUlNBLU9BRVAtMjU2IiwiZW5jIjoiQTI1NkdDTSJ9.tUlLtwKWkGRb1ZQI6ZLj8vbrsPUt42eSTR7eGSDlg3zdqSmoev3q82zPJLX-JVeI3JQtncsxZNXZ5Zuj2bdVetkCbiHXmHNYIXoHXamdJKLlFugGPgDPzLBeuwHkpu4J51A94xaPZes9IIzkGJua90005C00qbf7yt15qPo0vfOb2uZRP8b4Ywr2v5NtKsnRr5HB9PtBOhZnd06PCv9LewgsuaMnM_Rkzd-M1juN_5FE1rEwSgildvGEMSzrbFUiAj4jnHMhgPM7Wv1Wvl4ifZFxuGhWI0ix8P7PbQnrU4XHaBKs74lsPGGBUFOBkAyWzX9ZqDtw6OpqbP-Plu2x1Q.P1Q93xuEBit6BmoE.tLCByBNFb0PXzLtYldqDRJ7Nb6Tm2FTzFG_f37yy0VtFV7gTHl-YLuwY86STywS5UUDrmp0-Pbwv9Raat9Az6Zf4Sz99qX25pDXhVZJlzblZ7sEUowH3viikNn6Qg06dPNZDxAYlSnZpniJWGaRNg-oTbRvCSzFQqlK6rJopCTU2OQUGH9ML9Cjn7BohRYe2r_GqGdqMc_tPUyb2yTZdBNv7ZxSTvfeQJTQ7OgU16VKIIN4MijoMEUaZXn42Pzvl_gdvmD8VjQHUdOKkXwWKwc1rimBvrO37TFSG4tMDRKRzQCfMyRYPlYswy9MdkVbSjZ4bDEZV_g2L-nWAYHeHc_HjNHNtFLmJPWY-oJN4a4cgj8AORCv_c3MCrp3ctvGfFTryRPEGbIPmz0u4SPmJWJUjt90TtWRJhXnJuqqE7dqP5-kPmARVFYy3SA80wevbUA.X185FfLgCyQGtE--Sxxdog"
+      },
+      "enabled": true
+    },
+    {
+      "id": "kuaicha",
+      "label": "同花顺 · 快查企业",
+      "short": "快查企业",
+      "type": "http",
+      "url": "https://api-mcp.51ifind.com:8643/ds-mcp-servers/kuaicha-enterprise-mcp",
+      "headers": {
+        "Authorization": "eyJraWQiOiJtY3AtYXBpIiwidWlkIjoiODczNzA0NzY5IiwiYWxnIjoiUlNBLU9BRVAtMjU2IiwiZW5jIjoiQTI1NkdDTSJ9.tUlLtwKWkGRb1ZQI6ZLj8vbrsPUt42eSTR7eGSDlg3zdqSmoev3q82zPJLX-JVeI3JQtncsxZNXZ5Zuj2bdVetkCbiHXmHNYIXoHXamdJKLlFugGPgDPzLBeuwHkpu4J51A94xaPZes9IIzkGJua90005C00qbf7yt15qPo0vfOb2uZRP8b4Ywr2v5NtKsnRr5HB9PtBOhZnd06PCv9LewgsuaMnM_Rkzd-M1juN_5FE1rEwSgildvGEMSzrbFUiAj4jnHMhgPM7Wv1Wvl4ifZFxuGhWI0ix8P7PbQnrU4XHaBKs74lsPGGBUFOBkAyWzX9ZqDtw6OpqbP-Plu2x1Q.P1Q93xuEBit6BmoE.tLCByBNFb0PXzLtYldqDRJ7Nb6Tm2FTzFG_f37yy0VtFV7gTHl-YLuwY86STywS5UUDrmp0-Pbwv9Raat9Az6Zf4Sz99qX25pDXhVZJlzblZ7sEUowH3viikNn6Qg06dPNZDxAYlSnZpniJWGaRNg-oTbRvCSzFQqlK6rJopCTU2OQUGH9ML9Cjn7BohRYe2r_GqGdqMc_tPUyb2yTZdBNv7ZxSTvfeQJTQ7OgU16VKIIN4MijoMEUaZXn42Pzvl_gdvmD8VjQHUdOKkXwWKwc1rimBvrO37TFSG4tMDRKRzQCfMyRYPlYswy9MdkVbSjZ4bDEZV_g2L-nWAYHeHc_HjNHNtFLmJPWY-oJN4a4cgj8AORCv_c3MCrp3ctvGfFTryRPEGbIPmz0u4SPmJWJUjt90TtWRJhXnJuqqE7dqP5-kPmARVFYy3SA80wevbUA.X185FfLgCyQGtE--Sxxdog"
+      },
+      "enabled": true
+    },
+    {
+      "id": "law",
+      "label": "同花顺 · 法规库",
+      "short": "法规库",
+      "type": "http",
+      "url": "https://api-mcp.51ifind.com:8643/ds-mcp-servers/hexin-law-mcp",
+      "headers": {
+        "Authorization": "eyJraWQiOiJtY3AtYXBpIiwidWlkIjoiODczNzA0NzY5IiwiYWxnIjoiUlNBLU9BRVAtMjU2IiwiZW5jIjoiQTI1NkdDTSJ9.tUlLtwKWkGRb1ZQI6ZLj8vbrsPUt42eSTR7eGSDlg3zdqSmoev3q82zPJLX-JVeI3JQtncsxZNXZ5Zuj2bdVetkCbiHXmHNYIXoHXamdJKLlFugGPgDPzLBeuwHkpu4J51A94xaPZes9IIzkGJua90005C00qbf7yt15qPo0vfOb2uZRP8b4Ywr2v5NtKsnRr5HB9PtBOhZnd06PCv9LewgsuaMnM_Rkzd-M1juN_5FE1rEwSgildvGEMSzrbFUiAj4jnHMhgPM7Wv1Wvl4ifZFxuGhWI0ix8P7PbQnrU4XHaBKs74lsPGGBUFOBkAyWzX9ZqDtw6OpqbP-Plu2x1Q.P1Q93xuEBit6BmoE.tLCByBNFb0PXzLtYldqDRJ7Nb6Tm2FTzFG_f37yy0VtFV7gTHl-YLuwY86STywS5UUDrmp0-Pbwv9Raat9Az6Zf4Sz99qX25pDXhVZJlzblZ7sEUowH3viikNn6Qg06dPNZDxAYlSnZpniJWGaRNg-oTbRvCSzFQqlK6rJopCTU2OQUGH9ML9Cjn7BohRYe2r_GqGdqMc_tPUyb2yTZdBNv7ZxSTvfeQJTQ7OgU16VKIIN4MijoMEUaZXn42Pzvl_gdvmD8VjQHUdOKkXwWKwc1rimBvrO37TFSG4tMDRKRzQCfMyRYPlYswy9MdkVbSjZ4bDEZV_g2L-nWAYHeHc_HjNHNtFLmJPWY-oJN4a4cgj8AORCv_c3MCrp3ctvGfFTryRPEGbIPmz0u4SPmJWJUjt90TtWRJhXnJuqqE7dqP5-kPmARVFYy3SA80wevbUA.X185FfLgCyQGtE--Sxxdog"
+      },
+      "enabled": true
+    },
+    {
+      "id": "tyc",
+      "label": "天眼查 · 企业数据",
+      "short": "天眼查",
+      "type": "http",
+      "url": "https://mcp.tianyancha.com/mcp",
+      "headers": {
+        "Authorization": "mcpk2_6JCg6EEjKugCKbyzc3uhJN78EO7DN8jV"
+      },
+      "enabled": true
+    }
+  ]
+}

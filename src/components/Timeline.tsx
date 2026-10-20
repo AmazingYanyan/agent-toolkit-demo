@@ -1,0 +1,143 @@
+import { useEffect, useRef } from 'react';
+import type { RunEvent } from '../lib/types';
+
+const META: Record<string, { label: (p: any) => string; color: string; icon: string }> = {
+  run_started: { label: () => '收到任务，开始运行', color: '#33415C', icon: '▶' },
+  system_prompt_applied: { label: () => '应用 System Prompt', color: '#2F6F8F', icon: 'P' },
+  skill_index_loaded: {
+    label: (p) => `读取 Skill 索引：${p.count} 个 · 元数据 ${p.indexChars} 字（正文未读）`,
+    color: '#8C6A3F',
+    icon: 'S',
+  },
+  skill_matched: {
+    label: (p) =>
+      p.matched
+        ? `匹配命中 ${p.name}（${p.score} 分：${(p.hits || []).join('、') || '名称'}）`
+        : `未命中任何 Skill（${p.score} 分 < 阈值 ${p.threshold}），不加载正文`,
+    color: '#8C6A3F',
+    icon: 'S',
+  },
+  skill_loaded: { label: (p) => `按需读取正文 ${p.chars} 字并注入上下文`, color: '#2F6F8F', icon: 'S' },
+  skill_skipped: { label: (p) => `本次不加载 Skill，省下 ${p.savedChars} 字上下文`, color: '#A8AEB7', icon: 'S' },
+  skill_discovered: { label: (p) => `发现 Skill：${p.name}`, color: '#8C6A3F', icon: 'S' },
+  rag_search_started: {
+    label: (p) =>
+      `检索知识库：${p.query?.slice(0, 16)}… · ${p.effectiveMode === 'lexical' ? '词法' : p.effectiveMode === 'vector' ? '向量' : '混合'}`,
+    color: '#2F6F8F',
+    icon: 'R',
+  },
+  rag_search_completed: { label: (p) => `检索返回 ${p.count} 个片段`, color: '#4A7C59', icon: 'R' },
+  rag_context_injected: {
+    label: (p) => `注入 ${p.chunks} 个片段（${p.chars} 字）到上下文`,
+    color: '#2F6F8F',
+    icon: 'R',
+  },
+  context_dropped: { label: (p) => `丢弃 ${p.droppedMessages} 条历史消息`, color: '#A8AEB7', icon: 'C' },
+  tools_registered: { label: (p) => `注册工具 ${p.names?.length || 0} 个`, color: '#2F6F8F', icon: 'T' },
+  prompt_built: { label: (p) => `构建模型请求（${p.messageCount} 条消息）`, color: '#2F6F8F', icon: 'P' },
+  llm_request_started: { label: (p) => `请求 LLM · 第 ${p.round} 轮`, color: '#C9242B', icon: 'L' },
+  llm_response_completed: {
+    label: (p) => (p.toolCalls?.length ? `模型提出 ${p.toolCalls.length} 个工具调用` : '模型生成最终回答'),
+    color: '#C9242B',
+    icon: 'L',
+  },
+  tool_call_requested: { label: (p) => `模型请求工具：${p.toolName}`, color: '#8C6A3F', icon: '→' },
+  permission_checked: { label: (p) => (p.allowed ? '权限校验通过' : '权限校验拒绝'), color: '#4A7C59', icon: '✓' },
+  tool_call_started: { label: (p) => `执行工具：${p.toolName}`, color: '#8C6A3F', icon: 'E' },
+  tool_call_completed: { label: (p) => `工具返回：${p.summary || p.toolName}`, color: '#4A7C59', icon: '✓' },
+  tool_call_failed: { label: (p) => `工具失败：${p.toolName}`, color: '#C9242B', icon: '!' },
+  tool_call_rejected: { label: (p) => `工具被拒绝：${p.toolName}`, color: '#C9242B', icon: '×' },
+  mcp_connected: {
+    label: (p) => `${p.server || 'MCP'} 握手完成 · 协议 ${p.protocolVersion} · ${p.tools?.length || 0} 个工具`,
+    color: '#6B5B95',
+    icon: 'M',
+  },
+  mcp_connect_failed: { label: (p) => `MCP 连接失败：${p.serverLabel || p.serverId}`, color: '#C9242B', icon: '!' },
+  mcp_tools_call: {
+    label: (p) => `MCP tools/call：${p.server || p.serverId} / ${p.tool || p.name}`,
+    color: '#6B5B95',
+    icon: 'M',
+  },
+  run_completed: { label: () => '运行完成，返回结果', color: '#4A7C59', icon: '■' },
+  run_failed: { label: (p) => `运行失败：${p.error}`, color: '#C9242B', icon: '!' },
+};
+
+interface Props {
+  events: RunEvent[];
+  selectedId: string | null;
+  onSelect: (evt: RunEvent) => void;
+  collapsed: boolean;
+  onToggle: () => void;
+  running: boolean;
+}
+
+function fmtTime(iso: string) {
+  const d = new Date(iso);
+  const p = (n: number, l = 2) => String(n).padStart(l, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+export default function Timeline({ events, selectedId, onSelect, collapsed, onToggle, running }: Props) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const rows = events.filter((e) => e.event_type !== 'llm_output_delta');
+
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [rows.length]);
+
+  const start = events.find((e) => e.event_type === 'run_started');
+  const end = [...events].reverse().find((e) => e.event_type === 'run_completed' || e.event_type === 'run_failed');
+  const duration = start && end ? new Date(end.timestamp).getTime() - new Date(start.timestamp).getTime() : null;
+
+  return (
+    <div className={`timeline ${collapsed ? 'collapsed' : ''}`}>
+      <div className="timeline-head">
+        <span className="timeline-title">执行时间线</span>
+        <span className="timeline-meta">
+          {rows.length} 个事件
+          {duration !== null ? ` · ${(duration / 1000).toFixed(2)}s` : ''}
+        </span>
+        {running && (
+          <span className="run-status" style={{ margin: 0, padding: '2px 8px' }}>
+            <span className="spinner" />
+          </span>
+        )}
+        <button className="timeline-collapse" onClick={onToggle}>
+          {collapsed ? '展开' : '收起'}
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: collapsed ? 'rotate(180deg)' : 'none' }}>
+            <path d="M2 6l3-3 3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+      {!collapsed && (
+        <div className="timeline-body" ref={bodyRef}>
+          {rows.length === 0 ? (
+            <div className="tl-empty">
+              还没有运行记录。
+              <br />
+              点击右侧「运行」后，这里会按真实执行顺序记录每一步。
+            </div>
+          ) : (
+            rows.map((e) => {
+              const m = META[e.event_type] || { label: () => e.event_type, color: '#A8AEB7', icon: '·' };
+              return (
+                <button
+                  key={e.event_id}
+                  className={`tl-row ${selectedId === e.event_id ? 'sel' : ''}`}
+                  onClick={() => onSelect(e)}
+                >
+                  <span className="tl-time">{fmtTime(e.timestamp)}</span>
+                  <span className="tl-icon" style={{ background: m.color }}>
+                    {m.icon}
+                  </span>
+                  <span className="tl-text">{m.label(e.payload || {})}</span>
+                  <span className="tl-tag">{e.component_id}</span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
