@@ -40,6 +40,57 @@ export default function App() {
   const [runStats, setRunStats] = useState<any>(null);
   const [snapshot, setSnapshot] = useState<any>(null);
 
+  // ---- 可拖拽的三区尺寸（存 localStorage，刷新后保持）----
+  const readSize = (key: string, fallback: number, min: number, max: number) => {
+    const v = Number(window.localStorage.getItem(key));
+    return Number.isFinite(v) && v >= min && v <= max ? v : fallback;
+  };
+  const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+  const [leftW, setLeftW] = useState(() => readSize('wb.leftW', 236, 180, 460));
+  const [rightW, setRightW] = useState(() => readSize('wb.rightW', 412, 320, 780));
+  const [tlH, setTlH] = useState(() => readSize('wb.tlH', 246, 110, 560));
+  const [dragging, setDragging] = useState<'left' | 'right' | 'tl' | null>(null);
+  const dragRef = useRef<{ kind: 'left' | 'right' | 'tl'; x: number; y: number; l: number; r: number; h: number } | null>(
+    null
+  );
+
+  useEffect(() => {
+    window.localStorage.setItem('wb.leftW', String(leftW));
+  }, [leftW]);
+  useEffect(() => {
+    window.localStorage.setItem('wb.rightW', String(rightW));
+  }, [rightW]);
+  useEffect(() => {
+    window.localStorage.setItem('wb.tlH', String(tlH));
+  }, [tlH]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const move = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (d.kind === 'left') setLeftW(clamp(d.l + (e.clientX - d.x), 180, 460));
+      if (d.kind === 'right') setRightW(clamp(d.r - (e.clientX - d.x), 320, 780));
+      if (d.kind === 'tl') setTlH(clamp(d.h - (e.clientY - d.y), 110, 560));
+    };
+    const up = () => {
+      setDragging(null);
+      dragRef.current = null;
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [dragging]);
+
+  const startDrag = (kind: 'left' | 'right' | 'tl') => (e: React.PointerEvent) => {
+    e.preventDefault();
+    dragRef.current = { kind, x: e.clientX, y: e.clientY, l: leftW, r: rightW, h: tlH };
+    setDragging(kind);
+  };
+
   // 时间线上被点选的那一步 → 画布上高亮对应的两个节点与它们之间的连线
   const [focusEdges, setFocusEdges] = useState<string[]>([]);
   const [focusNodes, setFocusNodes] = useState<string[]>([]);
@@ -297,10 +348,27 @@ export default function App() {
     { id: 'detail', label: '详情' },
   ];
 
-  const shellClass = `shell ${sidebarOpen ? '' : 'no-side'} ${rightOpen ? '' : 'no-right'}`;
+  const shellClass = `shell ${sidebarOpen ? '' : 'no-side'} ${rightOpen ? '' : 'no-right'} ${dragging ? 'dragging' : ''}`;
 
   return (
-    <div className={shellClass}>
+    <div
+      className={shellClass}
+      style={
+        {
+          '--left-w': `${sidebarOpen ? leftW : 0}px`,
+          '--right-w': `${rightOpen ? rightW : 0}px`,
+        } as React.CSSProperties
+      }
+    >
+      {sidebarOpen && (
+        <div
+          className={`resizer v ${dragging === 'left' ? 'on' : ''}`}
+          style={{ left: leftW - 3 }}
+          onPointerDown={startDrag('left')}
+          title="拖动调整左侧栏宽度（双击复位）"
+          onDoubleClick={() => setLeftW(236)}
+        />
+      )}
       {sidebarOpen && (
         <Sidebar
           chapters={CHAPTERS}
@@ -321,7 +389,7 @@ export default function App() {
         />
       )}
 
-      <main className="main">
+      <main className="main" style={{ '--timeline-h': `${timelineCollapsed ? 38 : tlH}px` } as React.CSSProperties}>
         <div className="main-head">
           <div className="head-top">
             {!sidebarOpen && (
@@ -368,6 +436,14 @@ export default function App() {
           runCount={events.length}
         />
 
+        <div
+          className={`resizer h ${dragging === 'tl' ? 'on' : ''}`}
+          style={{ bottom: (timelineCollapsed ? 38 : tlH) - 3 }}
+          onPointerDown={startDrag('tl')}
+          title="拖动调整时间线高度（双击复位）"
+          onDoubleClick={() => setTlH(246)}
+        />
+
         <Timeline
           events={events}
           selectedId={selectedEvent?.event_id || null}
@@ -377,6 +453,16 @@ export default function App() {
           running={running}
         />
       </main>
+
+      {rightOpen && (
+        <div
+          className={`resizer v ${dragging === 'right' ? 'on' : ''}`}
+          style={{ right: rightW - 3 }}
+          onPointerDown={startDrag('right')}
+          title="拖动调整右侧面板宽度（双击复位）"
+          onDoubleClick={() => setRightW(412)}
+        />
+      )}
 
       {rightOpen && (
         <aside className="right">

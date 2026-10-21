@@ -185,37 +185,46 @@ export function listSkills() {
 }
 
 /**
- * 在索引里用问题做关键词匹配。
- *   restrictId 为空 → 在所有 Skill 中自动挑最匹配的
- *   restrictId 有值 且 forceMatch → 用户在界面上明确指定了这一个，直接加载（关键词分仅供参考）
- *   restrictId 有值 且不 forceMatch → 在该 Skill 的关键词上打分，仍受阈值约束
+ * 多 Skill 选择策略。
+ *
+ *   ids 为空 → 不加载任何 Skill（界面没勾就等于没选）
+ *   mode = 'auto' → 在勾选的 Skill 里按关键词打分，达到阈值的**全部**加载（0 个 / 1 个 / 多个都可能）
+ *   mode = 'all'  → 勾选的全部加载，分数只用于展示
+ *
+ * 返回打分明细与最终入选列表，前端据此展示「为什么是这几个」。
  */
-export function matchSkill(question, restrictId = null, threshold = 2, forceMatch = false) {
+export function matchSkills(question, ids = [], { mode = 'auto', threshold = 2 } = {}) {
   const index = skillIndex();
-  const pool = restrictId ? index.items.filter((s) => s.id === restrictId) : index.items;
+  const pool = index.items.filter((s) => ids.includes(s.id));
   const q = String(question || '');
-  let best = null;
 
-  for (const item of pool) {
-    const hits = item.keywords.filter((k) => k && q.includes(k));
-    let score = hits.length * 2;
-    if (q.includes(item.name)) score += 3;
-    if (!best || score > best.score) best = { item, hits, score };
-  }
+  const scored = pool
+    .map((item) => {
+      const hits = item.keywords.filter((k) => k && q.includes(k));
+      let score = hits.length * 2;
+      if (q.includes(item.name)) score += 3;
+      return {
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        score,
+        hits,
+        keywords: item.keywords,
+        matched: score >= threshold,
+      };
+    })
+    .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
 
-  const byScore = Boolean(best && best.score >= threshold);
-  const matched = forceMatch ? Boolean(best) : byScore;
+  const selected = mode === 'all' ? scored : scored.filter((s) => s.matched);
+
   return {
-    matched,
-    forced: forceMatch && Boolean(best),
-    byScore,
+    mode,
     threshold,
     scanned: index.count,
     candidates: pool.length,
-    item: best?.item || null,
-    score: best?.score || 0,
-    hits: best?.hits || [],
-    keywords: best?.item?.keywords || [],
+    scored,
+    selected,
+    selectedIds: selected.map((s) => s.id),
   };
 }
 

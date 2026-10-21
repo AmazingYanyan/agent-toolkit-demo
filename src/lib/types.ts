@@ -54,12 +54,16 @@ export interface RunConfig {
   rag: boolean;
   ragMode?: 'lexical' | 'vector' | 'hybrid';
   topK: number;
-  skill: string | null;
-  skillAuto: boolean;
+  /** 勾选的 Skill（可多选）。是否真的加载由 skillMode 决定 */
+  skills: string[];
+  /** auto：按问题关键词挑选，可能 0 个、1 个或多个；all：勾选的全部加载 */
+  skillMode: 'auto' | 'all';
   /** 允许模型按需读取 skill/references 与 assets（需要 Function Calling） */
   skillRefs: boolean;
   /** 允许模型按需执行 skill/scripts 中的已登记脚本（需要 Function Calling） */
   skillScripts: boolean;
+  /** 运行模式：off 为单轮问答；structured / agent / react / plan 对应 08–11 章 */
+  agentMode: 'off' | 'structured' | 'agent' | 'react' | 'plan';
   maxToolRounds: number;
 }
 

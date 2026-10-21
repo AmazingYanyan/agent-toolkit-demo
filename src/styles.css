@@ -84,17 +84,62 @@ select {
 /* ---------------- shell ---------------- */
 .shell {
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr) 412px;
+  grid-template-columns: var(--left-w, 236px) minmax(0, 1fr) var(--right-w, 412px);
   height: 100vh;
   overflow: hidden;
+  position: relative;
+}
+
+.shell.dragging {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.shell.dragging * {
+  user-select: none;
 }
 
 .shell.no-side {
-  grid-template-columns: 0 minmax(0, 1fr) 412px;
+  grid-template-columns: 0 minmax(0, 1fr) var(--right-w, 412px);
 }
 
 .shell.no-right {
-  grid-template-columns: 236px minmax(0, 1fr) 0;
+  grid-template-columns: var(--left-w, 236px) minmax(0, 1fr) 0;
+}
+
+.shell.no-side.no-right {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+/* 拖拽手柄：贴在三个区域的分界线上 */
+.resizer {
+  position: absolute;
+  z-index: 40;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.resizer.v {
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+}
+
+.resizer.h {
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+}
+
+.resizer:hover,
+.resizer.on {
+  background: rgba(201, 36, 43, 0.32);
+}
+
+.resizer.on {
+  box-shadow: 0 0 0 1px rgba(201, 36, 43, 0.28);
 }
 
 .shell.no-side.no-right {
@@ -334,6 +379,7 @@ select {
   grid-column: 2;
   min-width: 0;
   min-height: 0;
+  position: relative;
   background: var(--bg);
 }
 
@@ -538,7 +584,7 @@ select {
   background: var(--panel);
   display: flex;
   flex-direction: column;
-  height: 246px;
+  height: var(--timeline-h, 246px);
   flex-shrink: 0;
 }
 
@@ -3288,4 +3334,240 @@ input[type="range"] {
   margin-left: auto;
   color: var(--brand);
   font-weight: 600;
+}
+
+/* ================= 多 Skill：打分明细与分 Skill 明细 ================= */
+.score-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 10.4px;
+  color: var(--ink-3);
+  border: 1px solid transparent;
+}
+
+.score-row.hit {
+  background: #fdf9f6;
+  border-color: var(--brand-line);
+}
+
+.sr-name {
+  color: var(--ink-2);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-score {
+  font-family: var(--mono);
+  font-size: 9.8px;
+  text-align: right;
+  color: var(--ink-4);
+}
+
+.sr-hits {
+  font-size: 9.6px;
+  color: var(--ink-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pkg-block {
+  margin-bottom: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcfbf9;
+}
+
+.pkg-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--line);
+  margin-bottom: 6px;
+  font-size: 10.8px;
+  color: var(--ink-2);
+}
+
+.pkg-block-id {
+  font-family: var(--mono);
+  font-size: 9.4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #f1efec;
+  color: var(--resource);
+}
+
+.pkg-block-meta {
+  margin-left: auto;
+  font-size: 9.2px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+}
+
+/* ================= 运行模式选择 ================= */
+.mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin: 2px 0 4px;
+}
+
+.mode-chip {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  text-align: left;
+  font-size: 10.8px;
+  color: var(--ink-2);
+  transition: all 0.12s ease;
+}
+
+.mode-chip:hover {
+  border-color: var(--brand-line);
+}
+
+.mode-chip.on {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-weight: 620;
+}
+
+.mode-chip-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ================= 计划 / ReAct / Agent 轨迹 ================= */
+.plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.plan-step {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: start;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fcfbf9;
+}
+
+.plan-step.ok {
+  border-left: 3px solid var(--data);
+}
+
+.plan-step.bad {
+  border-left: 3px solid var(--brand);
+  background: #fdf6f6;
+}
+
+.plan-step.running {
+  border-left: 3px solid var(--brand);
+  background: #fff;
+}
+
+.plan-step-no {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #eee9e3;
+  color: var(--ink-2);
+  font-size: 9.5px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.plan-step-title {
+  font-size: 10.8px;
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.plan-step-tool {
+  font-family: var(--mono);
+  font-size: 9.2px;
+  color: var(--resource);
+  margin-left: 4px;
+}
+
+.plan-step-meta {
+  font-size: 9.4px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.plan-step-extra {
+  grid-column: 2 / 4;
+  font-size: 9.8px;
+  color: var(--ink-3);
+  line-height: 1.6;
+  margin-top: 2px;
+}
+
+.plan-step-extra code {
+  font-family: var(--mono);
+  font-size: 9.2px;
+  background: #f2efec;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+.trace-row {
+  padding: 6px 8px;
+  border-left: 2px solid var(--line);
+  margin-bottom: 6px;
+}
+
+.trace-row.thought {
+  border-left-color: var(--capability);
+  background: #f8fbfd;
+}
+
+.trace-row.action {
+  border-left-color: var(--resource);
+  background: #fdfaf5;
+}
+
+.trace-row.observation {
+  border-left-color: var(--data);
+  background: #f7faf8;
+}
+
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.6px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+  margin-bottom: 3px;
+}
+
+.trace-body {
+  font-size: 10.8px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
 }

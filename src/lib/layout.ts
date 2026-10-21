@@ -19,7 +19,7 @@ const TOOL_LABELS: Record<string, { label: string; sub: string }> = {
 };
 
 export function promptBuilderActive(cfg: RunConfig) {
-  return Boolean(cfg.systemPrompt?.enabled || cfg.skill || cfg.rag || cfg.multiTurn);
+  return Boolean(cfg.systemPrompt?.enabled || cfg.skills?.length || cfg.rag || cfg.multiTurn);
 }
 
 /** 从工具名里取 MCP 服务器 id */
@@ -38,12 +38,15 @@ export interface McpServerBrief {
 }
 
 export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: McpServerBrief[] = []) {
+  const mode = cfg.agentMode && cfg.agentMode !== 'off' ? cfg.agentMode : null;
+  if (mode) return buildModeGraph(cfg, toolNames, servers, mode);
+
   const nodes: ArchNode[] = [];
   const edges: ArchEdge[] = [];
   const pb = promptBuilderActive(cfg);
   const toolsOn = Boolean(cfg.functionCalling);
   // Skill 能力包：只要开启任意一路按需通道，就画出能力包节点
-  const pkgOn = Boolean(cfg.skill) && (cfg.skillRefs !== false || cfg.skillScripts !== false);
+  const pkgOn = Boolean(cfg.skills?.length) && (cfg.skillRefs !== false || cfg.skillScripts !== false);
 
   const mcpIds = [...new Set(toolNames.map((t) => serverIdOf(t)).filter(Boolean))] as string[];
   // 兼容旧开关：打开「通过 MCP 接入」时，本地同名工具走演示 MCP
@@ -76,7 +79,7 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
 
   push({ id: 'llm', label: 'LLM', sub: cfg.modelLabel || '大语言模型', x: COL.mid, y: 276, w: 152, h: 78, tone: 'model' });
 
-  if (cfg.skill) {
+  if (cfg.skills?.length) {
     push({
       id: 'skill_index',
       label: 'Skill 索引',
@@ -193,7 +196,7 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
 
   e({ id: 'llm->app', from: 'llm', to: 'app', kind: 'response' });
 
-  if (cfg.skill) {
+  if (cfg.skills?.length) {
     e({ id: 'app->skill_index', from: 'app', to: 'skill_index', kind: 'control', dashed: true, label: '查索引' });
     e({ id: 'skill_index->skill_loader', from: 'skill_index', to: 'skill_loader', kind: 'control', dashed: true, label: '命中才读' });
     if (pkgOn) {
@@ -244,6 +247,9 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
 
 /** 事件 → 高亮连线。返回该事件正在使用/刚完成的边集合 */
 export function eventEdges(evtType: string, cfg: RunConfig, payload: any): string[] {
+  const mode = cfg.agentMode && cfg.agentMode !== 'off' ? cfg.agentMode : null;
+  if (mode) return modeEventEdges(mode, evtType, payload);
+
   const pb = promptBuilderActive(cfg);
   const sid = payload?.serverId || serverIdOf(payload?.toolName || '');
   const mcpEdge = sid ? `mcp_client->mcp_${sid}` : null;
@@ -256,8 +262,10 @@ export function eventEdges(evtType: string, cfg: RunConfig, payload: any): strin
       return pb ? ['app->prompt_builder'] : [];
     case 'skill_index_loaded':
       return ['app->skill_index'];
-    case 'skill_matched':
-      return payload?.matched ? ['app->skill_index', 'skill_index->skill_loader'] : ['app->skill_index'];
+    case 'skill_selected':
+      return payload?.selectedCount
+        ? ['app->skill_index', 'skill_index->skill_loader']
+        : ['app->skill_index'];
     case 'skill_skipped':
     case 'skill_discovered':
       return ['app->skill_index'];
@@ -305,6 +313,9 @@ export function eventEdges(evtType: string, cfg: RunConfig, payload: any): strin
 
 /** 事件 → 节点状态 */
 export function eventNodes(evtType: string, cfg: RunConfig, payload: any): { id: string; status: string }[] {
+  const mode = cfg.agentMode && cfg.agentMode !== 'off' ? cfg.agentMode : null;
+  if (mode) return modeEventNodes(mode, evtType, payload);
+
   const pb = promptBuilderActive(cfg);
   const sid = payload?.serverId || serverIdOf(payload?.toolName || '');
 
@@ -320,8 +331,8 @@ export function eventNodes(evtType: string, cfg: RunConfig, payload: any): { id:
       return [{ id: 'llm', status: 'success' }];
     case 'skill_index_loaded':
       return [{ id: 'skill_index', status: 'success' }];
-    case 'skill_matched':
-      return payload?.matched
+    case 'skill_selected':
+      return payload?.selectedCount
         ? [
             { id: 'skill_index', status: 'success' },
             { id: 'skill_loader', status: 'running' },
@@ -396,6 +407,393 @@ export function eventNodes(evtType: string, cfg: RunConfig, payload: any): { id:
         { id: 'mcp_client', status: 'error' },
         { id: `mcp_${sid}`, status: 'error' },
       ];
+    case 'run_completed':
+      return [{ id: 'app', status: 'success' }];
+    case 'run_failed':
+      return [{ id: 'app', status: 'error' }];
+    default:
+      return [];
+  }
+}
+
+// ===========================================================================
+// 08–11 章：Agent 运行模式的画布拓扑
+//
+// 与 01–07 章不同，这几章的重点不是「能力有没有开」，而是「控制流怎么走」。
+// 因此画布上出现的是规划器、解析器、判定器与执行器，而不是 SKILL / RAG 那些能力节点。
+// ===========================================================================
+
+const MODE_COL = { user: 28, app: 172, mid: 352, cap: 528, ext: 742 };
+
+function modeExtColumn(
+  cfg: RunConfig,
+  toolNames: string[],
+  servers: McpServerBrief[],
+  push: (n: ArchNode) => void
+) {
+  const localTools = toolNames.filter((t) => !serverIdOf(t));
+  const mcpIds = [...new Set(toolNames.map((t) => serverIdOf(t)).filter(Boolean))] as string[];
+  const mcpUsed = servers.filter((s) => mcpIds.includes(s.id));
+
+  const items: { id: string; label: string; sub: string; tone: ArchNode['tone']; badge?: string }[] = [];
+  for (const t of localTools) {
+    const info = TOOL_LABELS[t] || { label: t, sub: t };
+    items.push({ id: `tool_${t}`, label: info.label, sub: info.sub, tone: 'resource', badge: '本地' });
+  }
+  for (const s of mcpUsed) {
+    items.push({
+      id: `mcp_${s.id}`,
+      label: s.short || s.id,
+      sub: `${s.toolCount ?? 0} 个工具 · ${s.type === 'stdio' ? 'stdio' : 'HTTP'}`,
+      tone: 'guard',
+      badge: 'MCP',
+    });
+  }
+
+  if (!items.length) return { localTools, mcpUsed };
+
+  const n = items.length;
+  const H = n <= 3 ? 58 : n <= 5 ? 50 : 44;
+  const GAP = n <= 3 ? 14 : 10;
+  const total = n * H + (n - 1) * GAP;
+  let y = Math.max(50, 320 - total / 2);
+  for (const item of items) {
+    push({
+      id: item.id,
+      label: item.label,
+      sub: item.sub,
+      x: MODE_COL.ext,
+      y,
+      w: 200,
+      h: H,
+      tone: item.tone,
+      badge: item.badge,
+    });
+    y += H + GAP;
+  }
+  return { localTools, mcpUsed };
+}
+
+export function buildModeGraph(
+  cfg: RunConfig,
+  toolNames: string[],
+  servers: McpServerBrief[],
+  mode: 'structured' | 'agent' | 'react' | 'plan'
+) {
+  const nodes: ArchNode[] = [];
+  const edges: ArchEdge[] = [];
+  const push = (n: ArchNode) => nodes.push(n);
+  const e = (edge: ArchEdge) => edges.push(edge);
+  const toolsOn = toolNames.length > 0;
+
+  push({ id: 'user', label: '用户', sub: '提出目标', x: MODE_COL.user, y: 282, w: 112, h: 66, tone: 'core' });
+  push({ id: 'app', label: 'Web 应用', sub: '编排 · 执行 · 校验', x: MODE_COL.app, y: 276, w: 148, h: 78, tone: 'core' });
+  e({ id: 'user->app', from: 'user', to: 'app', kind: 'request' });
+  e({ id: 'app->user', from: 'app', to: 'user', kind: 'response' });
+
+  if (mode === 'structured') {
+    push({ id: 'llm', label: 'LLM', sub: '按 Schema 抽取', x: MODE_COL.mid, y: 276, w: 140, h: 74, tone: 'model' });
+    push({
+      id: 'structurer',
+      label: '结构化约束',
+      sub: 'response_format + 校验',
+      x: MODE_COL.cap,
+      y: 276,
+      w: 158,
+      h: 74,
+      tone: 'capability',
+    });
+    push({ id: 'rules', label: '规则引擎', sub: '阈值判定 · 确定性', x: MODE_COL.ext, y: 276, w: 164, h: 74, tone: 'data' });
+    push({
+      id: 'renderer',
+      label: '报告渲染',
+      sub: '模板拼装 · 非模型撰写',
+      x: MODE_COL.ext,
+      y: 384,
+      w: 164,
+      h: 58,
+      tone: 'capability',
+    });
+
+    e({ id: 'app->llm', from: 'app', to: 'llm', kind: 'request' });
+    e({ id: 'llm->structurer', from: 'llm', to: 'structurer', kind: 'control', dashed: true, label: 'response_format' });
+    e({ id: 'structurer->rules', from: 'structurer', to: 'rules', kind: 'data', label: '校验通过' });
+    e({ id: 'rules->renderer', from: 'rules', to: 'renderer', kind: 'data' });
+    e({ id: 'renderer->app', from: 'renderer', to: 'app', kind: 'response', label: '成稿' });
+    return { nodes, edges };
+  }
+
+  // 三种循环模式共享骨架：LLM 在中间，循环的控制节点在上方，工具在右侧
+  push({ id: 'llm', label: 'LLM', sub: mode === 'plan' ? '规划 + 汇总' : '推理 + 决策', x: MODE_COL.mid, y: 276, w: 150, h: 74, tone: 'model' });
+
+  if (mode === 'plan') {
+    push({ id: 'planner', label: '规划器', sub: '产出结构化计划', x: MODE_COL.mid, y: 116, w: 150, h: 64, tone: 'capability' });
+    push({ id: 'executor', label: '执行器', sub: '按步骤执行 · 失败重规划', x: MODE_COL.cap, y: 116, w: 158, h: 64, tone: 'capability' });
+    e({ id: 'app->llm', from: 'app', to: 'llm', kind: 'context', label: '目标' });
+    e({ id: 'llm->planner', from: 'llm', to: 'planner', kind: 'control', dashed: true, label: '出计划' });
+    e({ id: 'planner->executor', from: 'planner', to: 'executor', kind: 'data', label: '计划' });
+    if (toolsOn) {
+      e({ id: 'executor->tool_handler', from: 'executor', to: 'tool_handler', kind: 'request' });
+      e({ id: 'tool_handler->executor', from: 'tool_handler', to: 'executor', kind: 'data', label: '观测' });
+    }
+    e({ id: 'executor->llm', from: 'executor', to: 'llm', kind: 'context', label: '观测汇总' });
+    e({ id: 'llm->app', from: 'llm', to: 'app', kind: 'response', label: '结论' });
+  } else if (mode === 'react') {
+    push({ id: 'react_parser', label: 'ReAct 解析', sub: 'Thought / Action / Final', x: MODE_COL.mid, y: 116, w: 150, h: 64, tone: 'capability' });
+    e({ id: 'app->llm', from: 'app', to: 'llm', kind: 'request' });
+    e({ id: 'llm->react_parser', from: 'llm', to: 'react_parser', kind: 'control', dashed: true, label: '原始文本' });
+    if (toolsOn) {
+      e({ id: 'react_parser->tool_handler', from: 'react_parser', to: 'tool_handler', kind: 'request', label: 'Action' });
+      e({ id: 'tool_handler->llm', from: 'tool_handler', to: 'llm', kind: 'data', label: 'Observation' });
+    }
+    e({ id: 'react_parser->app', from: 'react_parser', to: 'app', kind: 'response', label: 'Final' });
+  } else {
+    push({ id: 'agent_judge', label: '进展判定', sub: 'done? 还缺什么', x: MODE_COL.mid, y: 116, w: 150, h: 64, tone: 'capability' });
+    e({ id: 'app->llm', from: 'app', to: 'llm', kind: 'request' });
+    e({ id: 'llm->agent_judge', from: 'llm', to: 'agent_judge', kind: 'control', dashed: true, label: '决策 JSON' });
+    if (toolsOn) {
+      e({ id: 'agent_judge->tool_handler', from: 'agent_judge', to: 'tool_handler', kind: 'request', label: 'next_action' });
+      e({ id: 'tool_handler->llm', from: 'tool_handler', to: 'llm', kind: 'data', label: 'Observation' });
+    }
+    e({ id: 'agent_judge->app', from: 'agent_judge', to: 'app', kind: 'response', label: 'answer' });
+  }
+
+  if (toolsOn) {
+    push({
+      id: 'tool_handler',
+      label: '工具处理器',
+      sub: '校验 · 执行 · 回传',
+      x: MODE_COL.cap,
+      y: 276,
+      w: 150,
+      h: 74,
+      tone: 'capability',
+    });
+  }
+
+  modeExtColumn(cfg, toolNames, servers, push);
+
+  for (const t of toolNames.filter((x) => !serverIdOf(x))) {
+    e({ id: `tool_handler->tool_${t}`, from: 'tool_handler', to: `tool_${t}`, kind: 'request' });
+    e({ id: `tool_${t}->tool_handler`, from: `tool_${t}`, to: 'tool_handler', kind: 'data' });
+  }
+
+  return { nodes, edges };
+}
+
+/** 模式化事件的连线映射 */
+export function modeEventEdges(mode: string, evtType: string, payload: any): string[] {
+  if (mode === 'structured') {
+    switch (evtType) {
+      case 'prompt_built':
+      case 'structured_schema_sent':
+        return ['app->llm', 'llm->structurer'];
+      case 'structured_call_completed':
+      case 'structured_output_received':
+        return ['llm->structurer'];
+      case 'schema_validated':
+        return payload?.ok ? ['llm->structurer', 'structurer->rules'] : ['llm->structurer'];
+      case 'structured_repair_requested':
+      case 'structured_fallback':
+        return ['llm->structurer'];
+      case 'rules_evaluated':
+        return ['structurer->rules', 'rules->renderer'];
+      case 'structured_answer_rendered':
+        return ['rules->renderer', 'renderer->app'];
+      case 'run_completed':
+        return ['renderer->app', 'app->user'];
+      default:
+        return [];
+    }
+  }
+
+  if (mode === 'plan') {
+    switch (evtType) {
+      case 'plan_requested':
+      case 'plan_validated':
+      case 'plan_repair_requested':
+        return ['app->llm', 'llm->planner'];
+      case 'plan_created':
+        return ['llm->planner', 'planner->executor'];
+      case 'plan_step_started':
+      case 'plan_step_args_resolved':
+        return ['planner->executor', 'executor->tool_handler'];
+      case 'plan_step_completed':
+        return ['tool_handler->executor'];
+      case 'plan_replan_requested':
+      case 'plan_revised':
+        return ['executor->llm', 'llm->planner'];
+      case 'tool_call_completed':
+        return ['tool_handler->executor'];
+      case 'plan_synthesis_started':
+      case 'plan_synthesis_completed':
+        return ['executor->llm'];
+      case 'plan_completed':
+        return ['llm->app'];
+      case 'run_completed':
+        return ['llm->app', 'app->user'];
+      default:
+        return [];
+    }
+  }
+
+  if (mode === 'react') {
+    switch (evtType) {
+      case 'react_step_started':
+        return ['app->llm'];
+      case 'react_thought':
+        return ['llm->react_parser'];
+      case 'react_action':
+        return ['react_parser->tool_handler'];
+      case 'react_observation':
+        return ['tool_handler->llm'];
+      case 'react_final':
+        return ['react_parser->app'];
+      case 'react_parse_failed':
+      case 'react_action_invalid':
+        return ['llm->react_parser'];
+      case 'run_completed':
+        return ['react_parser->app', 'app->user'];
+      default:
+        return [];
+    }
+  }
+
+  switch (evtType) {
+    case 'agent_step_started':
+      return ['app->llm'];
+    case 'agent_step_decided':
+      return payload?.action ? ['llm->agent_judge', 'agent_judge->tool_handler'] : ['llm->agent_judge'];
+    case 'agent_observation':
+      return ['tool_handler->llm'];
+    case 'agent_goal_reached':
+      return ['agent_judge->app'];
+    case 'agent_decision_invalid':
+    case 'agent_action_invalid':
+      return ['llm->agent_judge'];
+    case 'run_completed':
+      return ['agent_judge->app', 'app->user'];
+    default:
+      return [];
+  }
+}
+
+/** 模式化事件的节点状态映射 */
+export function modeEventNodes(mode: string, evtType: string, payload: any): { id: string; status: string }[] {
+  if (mode === 'structured') {
+    switch (evtType) {
+      case 'prompt_built':
+        return [{ id: 'app', status: 'success' }];
+      case 'structured_schema_sent':
+        return [{ id: 'llm', status: 'running' }];
+      case 'structured_call_completed':
+      case 'structured_output_received':
+        return [{ id: 'llm', status: 'success' }];
+      case 'schema_validated':
+        return [{ id: 'structurer', status: payload?.ok ? 'success' : 'error' }];
+      case 'rules_evaluated':
+        return [
+          { id: 'rules', status: 'success' },
+          { id: 'structurer', status: 'success' },
+        ];
+      case 'structured_answer_rendered':
+        return [{ id: 'renderer', status: 'success' }];
+      case 'structured_failed':
+        return [
+          { id: 'structurer', status: 'error' },
+          { id: 'rules', status: 'skipped' },
+        ];
+      case 'run_completed':
+        return [{ id: 'app', status: 'success' }];
+      case 'run_failed':
+        return [{ id: 'app', status: 'error' }];
+      default:
+        return [];
+    }
+  }
+
+  if (mode === 'plan') {
+    switch (evtType) {
+      case 'plan_requested':
+        return [{ id: 'planner', status: 'running' }];
+      case 'plan_validated':
+        return [{ id: 'planner', status: payload?.ok ? 'success' : 'error' }];
+      case 'plan_created':
+        return [
+          { id: 'planner', status: 'success' },
+          { id: 'executor', status: 'running' },
+        ];
+      case 'plan_step_started':
+      case 'plan_step_args_resolved':
+        return [{ id: 'executor', status: 'running' }];
+      case 'plan_step_completed':
+        return [{ id: 'executor', status: payload?.ok ? 'running' : 'error' }];
+      case 'plan_revised':
+        return [{ id: 'planner', status: 'success' }];
+      case 'plan_synthesis_started':
+        return [{ id: 'llm', status: 'running' }];
+      case 'plan_synthesis_completed':
+        return [{ id: 'llm', status: 'success' }];
+      case 'plan_completed':
+        return [{ id: 'executor', status: 'success' }];
+      case 'plan_failed':
+        return [
+          { id: 'planner', status: 'error' },
+          { id: 'executor', status: 'skipped' },
+        ];
+      case 'run_completed':
+        return [{ id: 'app', status: 'success' }];
+      case 'run_failed':
+        return [{ id: 'app', status: 'error' }];
+      default:
+        return [];
+    }
+  }
+
+  if (mode === 'react') {
+    switch (evtType) {
+      case 'react_step_started':
+        return [{ id: 'llm', status: 'running' }];
+      case 'react_thought':
+        return [
+          { id: 'llm', status: 'success' },
+          { id: 'react_parser', status: 'running' },
+        ];
+      case 'react_action':
+        return [{ id: 'react_parser', status: 'success' }];
+      case 'react_observation':
+        return [{ id: 'llm', status: 'running' }];
+      case 'react_final':
+        return [{ id: 'react_parser', status: 'success' }];
+      case 'react_parse_failed':
+        return [{ id: 'react_parser', status: 'error' }];
+      case 'run_completed':
+        return [{ id: 'app', status: 'success' }];
+      case 'run_failed':
+        return [{ id: 'app', status: 'error' }];
+      default:
+        return [];
+    }
+  }
+
+  switch (evtType) {
+    case 'agent_goal_set':
+      return [{ id: 'agent_judge', status: 'running' }];
+    case 'agent_step_started':
+      return [{ id: 'llm', status: 'running' }];
+    case 'agent_step_decided':
+      return [
+        { id: 'llm', status: 'success' },
+        { id: 'agent_judge', status: 'success' },
+      ];
+    case 'agent_observation':
+      return [{ id: 'llm', status: 'running' }];
+    case 'agent_goal_reached':
+      return [{ id: 'agent_judge', status: 'success' }];
+    case 'agent_decision_invalid':
+      return [{ id: 'agent_judge', status: 'error' }];
+    case 'agent_budget_exhausted':
+      return [{ id: 'agent_judge', status: 'error' }];
     case 'run_completed':
       return [{ id: 'app', status: 'success' }];
     case 'run_failed':

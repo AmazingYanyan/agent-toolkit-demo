@@ -25,6 +25,15 @@ const LOCAL_TOOLS = [
   { name: 'evaluate_risk_rules', label: '演示风险规则引擎', desc: '阈值是否触发由程序判定' },
 ];
 
+/** 五种运行模式：决定「谁在控制流程」 */
+const MODE_OPTIONS: { id: RunConfig['agentMode']; label: string; desc: string }[] = [
+  { id: 'off', label: '单轮问答', desc: '问一次答一次，由应用固定编排' },
+  { id: 'structured', label: '结构化输出', desc: '按 Schema 输出 JSON，程序校验并判定' },
+  { id: 'agent', label: '目标循环', desc: '模型自己判断还缺什么，直到声明完成' },
+  { id: 'react', label: 'ReAct', desc: '文本协议 Thought / Action / Observation' },
+  { id: 'plan', label: 'Plan-and-Execute', desc: '先出计划，再逐步执行，失败可修订' },
+];
+
 function Switch({ on, locked, onClick }: { on: boolean; locked?: boolean; onClick: () => void }) {
   return (
     <button
@@ -174,22 +183,40 @@ export default function ConfigPanel({
   onRefreshMcp,
   onCfgSaved,
 }: Props) {
-  const [pkg, setPkg] = useState<any>(null);
+  const [pkgs, setPkgs] = useState<Record<string, any>>({});
 
+  const skillsKey = cfg.skills.join(',');
   useEffect(() => {
-    if (!cfg.skill) {
-      setPkg(null);
+    if (!cfg.skills.length) {
+      setPkgs({});
       return;
     }
     let alive = true;
-    api
-      .skill(cfg.skill)
-      .then((p) => alive && setPkg(p))
-      .catch(() => alive && setPkg(null));
+    Promise.all(cfg.skills.map((id) => api.skill(id).catch(() => null))).then((list) => {
+      if (!alive) return;
+      const map: Record<string, any> = {};
+      for (const p of list) if (p) map[p.id] = p;
+      setPkgs(map);
+    });
     return () => {
       alive = false;
     };
-  }, [cfg.skill]);
+  }, [skillsKey]);
+
+  const toggleSkill = (id: string) => {
+    onChange({ skills: cfg.skills.includes(id) ? cfg.skills.filter((x) => x !== id) : [...cfg.skills, id] });
+  };
+
+  const selectedTotals = useMemo(() => {
+    const list = cfg.skills.map((id) => pkgs[id]).filter(Boolean);
+    if (!list.length) return null;
+    return {
+      instructionChars: list.reduce((n, p) => n + (p.totals?.instructionChars || 0), 0),
+      packageChars: list.reduce((n, p) => n + (p.totals?.packageChars || 0), 0),
+      references: list.reduce((n, p) => n + (p.references?.length || 0), 0),
+      scripts: list.reduce((n, p) => n + (p.scripts?.length || 0), 0),
+    };
+  }, [cfg.skills, pkgs]);
 
   const toggleTool = (name: string) => {
     const has = cfg.tools.includes(name);
@@ -199,11 +226,6 @@ export default function ConfigPanel({
   const groups = mcp?.catalog || [];
   const mcpToolCount = groups.reduce((n: number, g: any) => n + g.tools.length, 0);
   const pickedMcp = cfg.tools.filter((t) => t.includes('__')).length;
-
-  const pickedSkill = skills.find((s) => s.id === cfg.skill);
-  const preloadChars = skillIndex?.totalBodyChars ?? 0;
-  const loadedChars = pickedSkill?.bodyChars ?? 0;
-  const indexChars = skillIndex?.indexChars ?? 0;
 
   const emb = kbStats?.embedding;
   const vec = kbStats?.vectorIndex;
@@ -269,31 +291,71 @@ export default function ConfigPanel({
         </div>
       </div>
 
+      {/* 运行模式 */}
+      <div className="cfg-group">
+        <div className="cfg-group-head">
+          <span className="cfg-group-icon" style={{ background: 'var(--guard)' }}>
+            2
+          </span>
+          <span className="cfg-group-name">运行模式</span>
+          <span className="cfg-group-hint">谁控制流程</span>
+        </div>
+        <div className="mode-grid">
+          {MODE_OPTIONS.map((m) => (
+            <button
+              key={m.id}
+              className={`mode-chip ${cfg.agentMode === m.id ? 'on' : ''}`}
+              onClick={() => onChange({ agentMode: m.id })}
+              title={m.desc}
+            >
+              <span className="mode-chip-label">{m.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="note" style={{ marginTop: 4, fontSize: 10.5 }}>
+          {MODE_OPTIONS.find((m) => m.id === cfg.agentMode)?.desc}
+        </div>
+      </div>
+
       {/* 外部能力 */}
       <div className="cfg-group">
         <div className="cfg-group-head">
           <span className="cfg-group-icon" style={{ background: 'var(--capability)' }}>
-            2
+            3
           </span>
           <span className="cfg-group-name">外部能力</span>
           <span className="cfg-group-hint">让模型拿到外部数据</span>
         </div>
 
-        <Row
-          title="工具调用 Function Calling"
-          desc="模型提出结构化调用请求，由应用校验并执行"
-          detail="开启后，模型会拿到工具清单（名称、说明、参数结构）。注意三件事是分开的：工具已注册 ≠ 模型本次一定会调用 ≠ 应用一定允许执行。时间线会分别记录这三步。"
-          on={cfg.functionCalling}
-          onToggle={() =>
-            onChange({
-              functionCalling: !cfg.functionCalling,
-              tools: cfg.functionCalling ? [] : cfg.tools,
-              mcpMode: !cfg.functionCalling ? cfg.mcpMode : false,
-            })
-          }
-        />
+        {cfg.agentMode !== 'off' ? (
+          <div className="cfg-row">
+            <div className="cfg-row-main">
+              <div className="cfg-row-title">
+                可用工具
+                <span className="mono-tag">{cfg.tools.length} 个</span>
+              </div>
+              <div className="cfg-row-desc">
+                本模式不使用原生 tools 参数：工具清单以文本形式交给模型，由它「说出」要调用什么
+              </div>
+            </div>
+          </div>
+        ) : (
+          <Row
+            title="工具调用 Function Calling"
+            desc="模型提出结构化调用请求，由应用校验并执行"
+            detail="开启后，模型会拿到工具清单（名称、说明、参数结构）。注意三件事是分开的：工具已注册 ≠ 模型本次一定会调用 ≠ 应用一定允许执行。时间线会分别记录这三步。"
+            on={cfg.functionCalling}
+            onToggle={() =>
+              onChange({
+                functionCalling: !cfg.functionCalling,
+                tools: cfg.functionCalling ? [] : cfg.tools,
+                mcpMode: !cfg.functionCalling ? cfg.mcpMode : false,
+              })
+            }
+          />
+        )}
 
-        {cfg.functionCalling && (
+        {(cfg.functionCalling || cfg.agentMode !== 'off') && (
           <>
             <div className="tool-source-bar">
               <span>
@@ -307,32 +369,6 @@ export default function ConfigPanel({
                   管理服务器
                 </button>
               </span>
-            </div>
-
-            <div className="path-note">
-              <div className="path-note-head">工具调用 ≠ MCP。这是两条并列的执行路径</div>
-              <div className="path-note-body">
-                Function Calling 只规定一件事：<b>模型怎么提出调用请求</b>。请求由谁真正执行，有两条路可选：
-              </div>
-              <div className="path-item">
-                <span className="path-no">①</span>
-                <div>
-                  <b>本地函数直接执行</b>
-                  <span className="path-sub">应用进程内的函数，拿到参数就地算完。不经过任何网络，也不需要 MCP。</span>
-                </div>
-              </div>
-              <div className="path-item">
-                <span className="path-no">②</span>
-                <div>
-                  <b>通过 MCP Server 执行</b>
-                  <span className="path-sub">
-                    工具由 MCP Server 用 tools/list 声明，应用走 JSON-RPC tools/call 交给独立进程、内网系统或云端服务执行。
-                  </span>
-                </div>
-              </div>
-              <div className="path-note-foot">
-                下面两组工具分别是这两条路的入口。勾哪一组，模型拿到的清单里就只有哪一组——模型并不知道工具背后是谁在跑。
-              </div>
             </div>
 
             <div className="sub-label">① 本地函数（进程内直接执行）</div>
@@ -405,7 +441,7 @@ export default function ConfigPanel({
       <div className="cfg-group">
         <div className="cfg-group-head">
           <span className="cfg-group-icon" style={{ background: 'var(--resource)' }}>
-            3
+            4
           </span>
           <span className="cfg-group-name">知识与经验</span>
           <span className="cfg-group-hint">改变回答依据</span>
@@ -473,95 +509,69 @@ export default function ConfigPanel({
 
         <Row
           title="Skill 专家方法"
-          desc="启动只读索引，命中才读主指令；资料与脚本再按需取用"
-          detail="Skill 不是一个巨大的说明书，而是一个能力包：SKILL.md 只是入口与路由，具体方法论拆进 references/，确定性计算放进 scripts/，输出模板放进 assets/。这样做的目的是渐进式披露——主指令先把「什么情况下该读什么、跑什么」讲清楚，真正需要时才去取那一份。它不改变模型参数，也不直接提供数据。"
-          on={Boolean(cfg.skill)}
+          desc={
+            cfg.skills.length
+              ? `已选 ${cfg.skills.length} 个 · 主指令合计 ${selectedTotals?.instructionChars ?? '…'} 字`
+              : '未选择（可多选，按需加载）'
+          }
+          detail="Skill 是一个能力包：SKILL.md 只是入口与路由，方法论拆进 references/，确定性计算放进 scripts/，模板放进 assets/。这里是多选的——选几个，运行时按策略决定加载哪几个主指令；资源与脚本一律带 skill_id，所以多个同时加载也不会读错文件。它不改变模型参数，也不直接提供数据。"
+          on={cfg.skills.length > 0}
           onToggle={() =>
             onChange({
-              skill: cfg.skill ? null : skills.find((s) => s.id === 'financial-risk')?.id || skills[0]?.id || null,
+              skills: cfg.skills.length
+                ? []
+                : [skills.find((s) => s.id === 'financial-risk')?.id || skills[0]?.id].filter(Boolean),
             })
           }
         />
+
         {skills.length > 0 && (
           <div className="sub-row">
-            {skills.map((s) => (
-              <div
-                key={s.id}
-                className="sub-item"
-                style={{ cursor: 'pointer', opacity: cfg.skill && cfg.skill !== s.id ? 0.55 : 1 }}
-                onClick={() => onChange({ skill: cfg.skill === s.id ? null : s.id })}
-              >
-                <Check on={cfg.skill === s.id} />
-                <span className="grow">{s.name}</span>
-                <span className="mono-tag" title="正文体积">
-                  {s.bodyChars} 字
-                </span>
-                <button
-                  className="cfg-hint-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenSkill(s.id);
-                  }}
-                >
-                  SKILL.md
-                </button>
-              </div>
-            ))}
+            {skills.map((s) => {
+              const on = cfg.skills.includes(s.id);
+              return (
+                <div key={s.id} className="sub-item" style={{ cursor: 'pointer' }} onClick={() => toggleSkill(s.id)}>
+                  <Check on={on} />
+                  <span className="grow">{s.name}</span>
+                  {on && (
+                    <span className="mono-tag" title="主指令体积">
+                      {pkgs[s.id]?.totals?.instructionChars ?? s.bodyChars} 字
+                    </span>
+                  )}
+                  <button
+                    className="cfg-hint-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenSkill(s.id);
+                    }}
+                  >
+                    能力包
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
-        {cfg.skill && (
-          <div className="sub-row" style={{ marginTop: 8 }}>
-            <div className="skill-flow">
-              <div className="sf-head">
-                <span>Skill 按需加载</span>
-                <span className="mono-tag">{skillIndex?.count ?? skills.length} 个 Skill</span>
-              </div>
-              <div className="sf-step">
-                <span className="sf-no">1</span>
-                <div>
-                  <b>索引常驻</b>
-                  <span className="sf-sub">只读名称、说明、关键词 · {indexChars} 字</span>
-                </div>
-              </div>
-              <div className="sf-arrow">↓ 收到问题后按关键词打分</div>
-              <div className="sf-step">
-                <span className="sf-no">2</span>
-                <div>
-                  <b>匹配</b>
-                  <span className="sf-sub">达到阈值才继续，否则本次不加载</span>
-                </div>
-              </div>
-              <div className="sf-arrow">↓ 只读命中这一个的正文</div>
-              <div className="sf-step">
-                <span className="sf-no">3</span>
-                <div>
-                  <b>注入上下文</b>
-                  <span className="sf-sub">
-                    {pickedSkill?.name || cfg.skill} · {loadedChars} 字
-                    {preloadChars > loadedChars && `（全量预载需 ${preloadChars} 字）`}
-                  </span>
-                </div>
-              </div>
-              <div className="sf-arrow">↓ 模型判断「这次任务需要哪份方法」时</div>
-              <div className="sf-step">
-                <span className="sf-no">4</span>
-                <div>
-                  <b>按需取用资源</b>
-                  <span className="sf-sub">
-                    读哪份 reference、跑哪个脚本，由模型自己发起调用；没取用的内容一个字节都不进上下文
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="cfg-row" style={{ paddingTop: 8 }}>
+        {cfg.skills.length > 0 && (
+          <>
+            <div className="cfg-row" style={{ paddingTop: 6 }}>
               <div className="cfg-row-main">
-                <div className="cfg-row-title">按问题自动匹配</div>
+                <div className="cfg-row-title">选择策略</div>
                 <div className="cfg-row-desc">
-                  关闭：固定使用上面勾选的那一个，不再做关键词筛选；打开：按问题在索引里挑最匹配的，未达阈值则本次不加载
+                  {cfg.skillMode === 'all'
+                    ? '勾选的全部加载主指令，分数只用于展示'
+                    : '按问题挑，可能 0 个、1 个或多个；未达阈值则不加载'}
                 </div>
               </div>
-              <Switch on={cfg.skillAuto} onClick={() => onChange({ skillAuto: !cfg.skillAuto })} />
+              <div className="seg" style={{ marginBottom: 0 }}>
+                <button className={cfg.skillMode !== 'all' ? 'on' : ''} onClick={() => onChange({ skillMode: 'auto' })}>
+                  自动匹配
+                </button>
+                <button className={cfg.skillMode === 'all' ? 'on' : ''} onClick={() => onChange({ skillMode: 'all' })}>
+                  全部加载
+                </button>
+              </div>
             </div>
 
             <div className="cfg-row">
@@ -570,9 +580,7 @@ export default function ConfigPanel({
                   按需读取参考资料
                   <span className="mono-tag">references / assets</span>
                 </div>
-                <div className="cfg-row-desc">
-                  模型主动请求才读，读到哪份才把哪份放进上下文；其余留在磁盘
-                </div>
+                <div className="cfg-row-desc">模型主动请求才读，其余留在磁盘</div>
               </div>
               <Switch on={cfg.skillRefs} onClick={() => onChange({ skillRefs: !cfg.skillRefs })} />
             </div>
@@ -583,95 +591,24 @@ export default function ConfigPanel({
                   按需执行脚本
                   <span className="mono-tag">scripts</span>
                 </div>
-                <div className="cfg-row-desc">只回传标准输出，脚本源码不进上下文；参数校验、超时、无网络</div>
+                <div className="cfg-row-desc">只回传标准输出，源码不进上下文</div>
               </div>
               <Switch on={cfg.skillScripts} onClick={() => onChange({ skillScripts: !cfg.skillScripts })} />
             </div>
 
             {!cfg.functionCalling && (
               <div className="note warn" style={{ marginTop: 6 }}>
-                这两路要靠 Function Calling 才触达得到：没开工具调用，模型拿不到
-                <b>读资源</b>、<b>跑脚本</b>两个工具，只能读到 SKILL.md 主指令。这正是 Skill 与 Harness 的分工——
-                Skill 说明「什么情况下该读什么、跑什么」，Harness 提供真正读文件与执行脚本的能力。
+                未开启 Function Calling：模型只能读主指令，读不到资料、也跑不了脚本。
               </div>
             )}
 
-            {pkg && (
-              <div className="pkg-tree">
-                <div className="pkg-tree-head">
-                  <span>能力包结构</span>
-                  <span className="mono-tag">
-                    全量预载 {pkg.totals?.packageChars ?? 0} 字 · 本次只读 {pkg.totals?.instructionChars ?? 0} 字
-                  </span>
-                </div>
-                <div className="pkg-row core">
-                  <span className="pkg-name">SKILL.md</span>
-                  <span className="pkg-desc">主指令 · 路由说明</span>
-                  <span className="pkg-chars">{pkg.totals?.instructionChars ?? 0} 字</span>
-                  <span className="pkg-badge on">命中即读</span>
-                </div>
-                <div className="pkg-group">
-                  <div className="pkg-group-head">
-                    <span className="pkg-dir">references/</span>
-                    <span className="pkg-group-meta">
-                      {pkg.references?.length || 0} 份 · {pkg.totals?.referenceChars ?? 0} 字
-                    </span>
-                  </div>
-                  {(pkg.references || []).map((r: any) => (
-                    <div className="pkg-row" key={r.path}>
-                      <span className="pkg-name">{r.path.replace('references/', '')}</span>
-                      <span className="pkg-desc" title={r.when}>
-                        {r.title}
-                      </span>
-                      <span className="pkg-chars">{r.chars} 字</span>
-                      <span className="pkg-badge">按需</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="pkg-group">
-                  <div className="pkg-group-head">
-                    <span className="pkg-dir">scripts/</span>
-                    <span className="pkg-group-meta">
-                      {pkg.scripts?.length || 0} 个 · 源码 {pkg.totals?.scriptChars ?? 0} 字
-                    </span>
-                  </div>
-                  {(pkg.scripts || []).map((s: any) => (
-                    <div className="pkg-row" key={s.name}>
-                      <span className="pkg-name">{s.name}</span>
-                      <span className="pkg-desc" title={s.when}>
-                        {s.title}
-                      </span>
-                      <span className="pkg-chars">{s.chars} 字</span>
-                      <span className="pkg-badge">只执行</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="pkg-group">
-                  <div className="pkg-group-head">
-                    <span className="pkg-dir">assets/</span>
-                    <span className="pkg-group-meta">
-                      {pkg.assets?.length || 0} 个 · {pkg.totals?.assetChars ?? 0} 字
-                    </span>
-                  </div>
-                  {(pkg.assets || []).map((a: any) => (
-                    <div className="pkg-row" key={a.path}>
-                      <span className="pkg-name">{a.path.replace('assets/', '')}</span>
-                      <span className="pkg-desc" title={a.when}>
-                        {a.title}
-                      </span>
-                      <span className="pkg-chars">{a.chars} 字</span>
-                      <span className="pkg-badge">按需</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="pkg-tree-foot">
-                  <button className="cfg-hint-btn" onClick={() => onOpenSkill(cfg.skill!)}>
-                    打开能力包，逐个文件看
-                  </button>
-                </div>
+            {selectedTotals && (
+              <div className="note" style={{ marginTop: 6, fontSize: 10.5 }}>
+                已选 {cfg.skills.length} 个 · 主指令 {selectedTotals.instructionChars} 字 · {selectedTotals.references} 份资料 /{' '}
+                {selectedTotals.scripts} 个脚本 · 全量预载 {selectedTotals.packageChars} 字
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 
@@ -679,7 +616,7 @@ export default function ConfigPanel({
       <div className="cfg-group" style={{ opacity: 0.55 }}>
         <div className="cfg-group-head">
           <span className="cfg-group-icon" style={{ background: 'var(--guard)' }}>
-            4
+            5
           </span>
           <span className="cfg-group-name">Agent 运行与安全治理</span>
           <span className="cfg-group-hint">第二阶段</span>

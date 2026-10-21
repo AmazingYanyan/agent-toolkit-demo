@@ -703,9 +703,10 @@ export function ToolSchemaModal({
     functionCalling: cfg.functionCalling,
     tools: cfg.tools,
     mcpMode: cfg.mcpMode,
-    skill: cfg.skill,
+    skill: cfg.skills,
     skillRefs: cfg.skillRefs,
     skillScripts: cfg.skillScripts,
+    agentMode: cfg.agentMode,
     systemPrompt: { enabled: cfg.systemPrompt?.enabled, text: cfg.systemPrompt?.text },
     temperature: cfg.temperature,
   });
@@ -820,9 +821,19 @@ export function ToolSchemaModal({
         <>
           {!defs.length ? (
             <div className="note">
-              本次请求不带 <code>tools</code> 参数。模型拿不到任何工具定义，只能凭已有参数回答。
-              <br />
-              打开「工具调用 Function Calling」并勾选工具后，再回来这里就能看到真实的清单。
+              {preview?.modeNote ? (
+                <>
+                  {preview.modeNote}
+                  <br />
+                  可用工具：{(preview.availableTools || []).join('、') || '无'}
+                </>
+              ) : (
+                <>
+                  本次请求不带 <code>tools</code> 参数。模型拿不到任何工具定义，只能凭已有参数回答。
+                  <br />
+                  打开「工具调用 Function Calling」并勾选工具后，再回来这里就能看到真实的清单。
+                </>
+              )}
             </div>
           ) : (
             <div className="schema-tools">

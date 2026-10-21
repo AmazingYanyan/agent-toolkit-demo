@@ -32,6 +32,7 @@ export async function streamChat({
   onDelta,
   signal,
   maxToolChoice = 'auto',
+  responseFormat,
 }) {
   if (!config.apiKey) throw new LLMError('未配置 API Key，请在设置中填写模型服务凭据');
   const url = endpoint(config.baseUrl, '/chat/completions');
@@ -46,6 +47,9 @@ export async function streamChat({
   if (tools && tools.length) {
     body.tools = tools;
     body.tool_choice = maxToolChoice;
+  }
+  if (responseFormat) {
+    body.response_format = responseFormat;
   }
 
   const controller = new AbortController();

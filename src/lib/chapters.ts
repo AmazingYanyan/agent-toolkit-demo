@@ -15,10 +15,11 @@ export const BASE_CONFIG: RunConfig = {
   rag: false,
   ragMode: 'hybrid',
   topK: 4,
-  skill: null,
-  skillAuto: false,
+  skills: [],
+  skillMode: 'auto',
   skillRefs: true,
   skillScripts: true,
+  agentMode: 'off',
   maxToolRounds: 4,
 };
 
@@ -83,8 +84,8 @@ export const CHAPTERS: Chapter[] = [
     question:
       '根据以下数据分析企业风险：2024 年营业收入 1000 万元，2025 年营业收入 800 万元；2025 年总资产 1000 万元、总负债 750 万元；2025 年经营活动现金流量净额 -100 万元。',
     preset: {
-      skill: 'financial-risk',
-      skillAuto: false,
+      skills: ['financial-risk'],
+      skillMode: 'auto',
       functionCalling: true,
       tools: [],
       skillRefs: true,
@@ -95,33 +96,56 @@ export const CHAPTERS: Chapter[] = [
     id: 'ch08',
     no: '08',
     title: '结构化输出与确定性规则',
-    question: '待开放',
-    preset: {},
-    locked: true,
+    question:
+      '星河科技（DEMO001）2024 年营业收入 1000 万元，2025 年营业收入 800 万元；2025 年总资产 1000 万元、总负债 750 万元；2025 年经营活动现金流量净额 -100 万元。请抽取这些数据并按规则判断。',
+    preset: {
+      agentMode: 'structured',
+      functionCalling: false,
+      tools: [],
+      skills: [],
+    },
   },
   {
     id: 'ch09',
     no: '09',
     title: '什么是 Agent',
-    question: '待开放',
-    preset: {},
-    locked: true,
+    question:
+      '请查一下星河科技（DEMO001）现在的工商登记状态和 2025 年财务情况，判断它的资产负债率高不高。',
+    placeholder: '换一个目标试试：晨光制造（DEMO002）的经营现金流是不是比星河科技更健康？',
+    preset: {
+      agentMode: 'agent',
+      functionCalling: false,
+      tools: ['get_company_info', 'get_company_financials'],
+      skills: [],
+      maxToolRounds: 5,
+    },
   },
   {
     id: 'ch10',
     no: '10',
     title: 'ReAct 运行模式',
-    question: '待开放',
-    preset: {},
-    locked: true,
+    question: '请计算星河科技（DEMO001）2025 年的资产负债率，并说明这个水平意味着什么。',
+    preset: {
+      agentMode: 'react',
+      functionCalling: false,
+      tools: ['get_company_info', 'get_company_financials', 'calculate_ratio'],
+      skills: [],
+      maxToolRounds: 6,
+    },
   },
   {
     id: 'ch11',
     no: '11',
     title: 'Plan-and-Execute',
-    question: '待开放',
-    preset: {},
-    locked: true,
+    question:
+      '请分析星河科技（DEMO001）2025 年度的偿债能力：先确认工商登记信息，再取 2025 年财务数据，算出资产负债率，最后给出风险提示。',
+    preset: {
+      agentMode: 'plan',
+      functionCalling: false,
+      tools: ['get_company_info', 'get_company_financials', 'calculate_ratio', 'evaluate_risk_rules'],
+      skills: [],
+      maxToolRounds: 6,
+    },
   },
   {
     id: 'ch12',

@@ -104,17 +104,113 @@ function RagChips({ events }: { events: RunEvent[] }) {
   );
 }
 
+function PlanTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: RunEvent) => void }) {
+  const created = events.find((e) => e.event_type === 'plan_created');
+  if (!created) return null;
+  const steps = created.payload?.steps || [];
+  const done = events.filter((e) => e.event_type === 'plan_step_completed');
+  const revised = events.find((e) => e.event_type === 'plan_revised');
+
+  return (
+    <div className="st-pkg" style={{ marginTop: 8 }}>
+      <div className="st-pkg-head">
+        <span>执行计划</span>
+        <span className="st-pkg-meta">
+          {steps.length} 步{revised ? ' · 已修订' : ''}
+        </span>
+      </div>
+      <div className="plan-steps">
+        {steps.map((s: any) => {
+          const d = done.find((x) => x.payload?.stepId === s.id);
+          const cls = d ? (d.payload?.ok ? 'ok' : 'bad') : 'running';
+          return (
+            <button
+              className={`plan-step ${cls}`}
+              key={s.id}
+              style={{ textAlign: 'left', width: '100%' }}
+              onClick={() => onSelect(d || created)}
+            >
+              <span className="plan-step-no">{s.id}</span>
+              <div>
+                <div className="plan-step-title">
+                  {s.title}
+                  <span className="plan-step-tool">{s.tool}</span>
+                </div>
+                {d && <div className="plan-step-extra">{d.payload?.summary}</div>}
+              </div>
+              <span className="plan-step-meta">{d ? (d.payload?.ok ? '✓' : '✗') : '…'}</span>
+            </button>
+          );
+        })}
+      </div>
+      {revised && <div className="st-idle" style={{ marginTop: 4 }}>执行中修订过计划：{revised.payload?.reason}</div>}
+    </div>
+  );
+}
+
+function LoopTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: RunEvent) => void }) {
+  const thoughts = events.filter((e) => e.event_type === 'react_thought');
+  const decisions = events.filter((e) => e.event_type === 'agent_step_decided');
+  if (!thoughts.length && !decisions.length) return null;
+  const isReact = thoughts.length > 0;
+
+  return (
+    <div className="st-pkg" style={{ marginTop: 8 }}>
+      <div className="st-pkg-head">
+        <span>{isReact ? 'ReAct 轨迹' : 'Agent 决策'}</span>
+        <span className="st-pkg-meta">{isReact ? `${thoughts.length} 步` : `${decisions.length} 轮`}</span>
+      </div>
+      <div className="st-chips">
+        {isReact
+          ? thoughts.map((t) => {
+              const act = events.find(
+                (e) => e.event_type === 'react_action' && e.payload?.step === t.payload?.step
+              );
+              const obs = events.find(
+                (e) => e.event_type === 'react_observation' && e.payload?.step === t.payload?.step
+              );
+              return (
+                <span className="st-chips" key={t.event_id} style={{ gap: 4 }}>
+                  <button className="st-chip ref" onClick={() => onSelect(t)}>
+                    T{String(t.payload?.step)} · {String(t.payload?.thought || '').slice(0, 16)}…
+                  </button>
+                  {act && (
+                    <button className="st-chip script" onClick={() => onSelect(act)}>
+                      A · {act.payload?.action}
+                    </button>
+                  )}
+                  {obs && (
+                    <button className="st-chip" onClick={() => onSelect(obs)}>
+                      O · {obs.payload?.chars} 字
+                    </button>
+                  )}
+                </span>
+              );
+            })
+          : decisions.map((d) => (
+              <button className="st-chip ref" key={d.event_id} onClick={() => onSelect(d)}>
+                {`第 ${d.payload?.step} 轮 · `}
+                {d.payload?.done ? '达成' : d.payload?.action?.tool || '无动作'}
+              </button>
+            ))}
+      </div>
+    </div>
+  );
+}
+
 function SkillTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: RunEvent) => void }) {
   const idx = events.find((e) => e.event_type === 'skill_index_loaded');
   if (!idx) return null;
-  const match = events.find((e) => e.event_type === 'skill_matched');
-  const loaded = events.find((e) => e.event_type === 'skill_loaded');
+  const sel = events.find((e) => e.event_type === 'skill_selected');
+  const loaded = events.filter((e) => e.event_type === 'skill_loaded');
   const skipped = events.find((e) => e.event_type === 'skill_skipped');
   const pkg = events.find((e) => e.event_type === 'skill_package_mounted');
   const blocked = events.find((e) => e.event_type === 'skill_tools_unavailable');
   const refs = events.filter((e) => e.event_type === 'skill_resource_read');
   const scripts = events.filter((e) => e.event_type === 'skill_script_run');
-  const tail = loaded || skipped;
+  const tail = loaded.length ? loaded[0] : skipped;
+  const refTotal = (pkg?.payload?.skills || []).reduce((n: number, s: any) => n + (s.references?.length || 0), 0);
+  const scriptTotal = (pkg?.payload?.skills || []).reduce((n: number, s: any) => n + (s.scripts?.length || 0), 0);
 
   return (
     <div className="skill-trace-wrap">
@@ -126,16 +222,22 @@ function SkillTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: Ru
           </span>
         </button>
         <span className="st-arrow">→</span>
-        <button className="st-step" onClick={() => onSelect(match || idx)}>
-          <span className="st-k">匹配</span>
+        <button className="st-step" onClick={() => onSelect(sel || idx)}>
+          <span className="st-k">选择</span>
           <span className="st-v">
-            {match?.payload?.matched ? `命中 · ${match.payload.score} 分` : '未命中'}
+            {sel?.payload?.selectedCount ?? 0}/{sel?.payload?.candidates ?? 0} 个
           </span>
         </button>
         <span className="st-arrow">→</span>
         <button className="st-step" onClick={() => tail && onSelect(tail)}>
           <span className="st-k">主指令</span>
-          <span className="st-v">{loaded ? `${loaded.payload?.chars} 字` : skipped ? '未读' : '—'}</span>
+          <span className="st-v">
+            {loaded.length
+              ? `${loaded.reduce((n, e) => n + (e.payload?.chars || 0), 0)} 字`
+              : skipped
+                ? '未加载'
+                : '—'}
+          </span>
         </button>
         {pkg && (
           <>
@@ -143,7 +245,7 @@ function SkillTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: Ru
             <button className="st-step" onClick={() => onSelect(pkg)}>
               <span className="st-k">能力包</span>
               <span className="st-v">
-                {pkg.payload?.references?.length || 0} 资料 / {pkg.payload?.scripts?.length || 0} 脚本
+                {refTotal} 资料 / {scriptTotal} 脚本
               </span>
             </button>
           </>
@@ -155,8 +257,7 @@ function SkillTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: Ru
           <div className="st-pkg-head">
             <span>按需取用</span>
             <span className="st-pkg-meta">
-              资料 {refs.length}/{pkg.payload?.references?.length || 0} · 脚本 {scripts.length}/
-              {pkg.payload?.scripts?.length || 0}
+              资料 {refs.length}/{refTotal} · 脚本 {scripts.length}/{scriptTotal}
             </span>
           </div>
           {refs.length === 0 && scripts.length === 0 && (
@@ -165,12 +266,13 @@ function SkillTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: Ru
           <div className="st-chips">
             {refs.map((e) => (
               <button className="st-chip ref" key={e.event_id} onClick={() => onSelect(e)}>
-                {String(e.payload?.path || '').replace(/^(references|assets)\//, '')} · {e.payload?.chars} 字
+                {e.payload?.skillId}:{String(e.payload?.path || '').replace(/^(references|assets)\//, '')} ·{' '}
+                {e.payload?.chars} 字
               </button>
             ))}
             {scripts.map((e) => (
               <button className="st-chip script" key={e.event_id} onClick={() => onSelect(e)}>
-                {e.payload?.name} · 码 {e.payload?.exitCode} · 出 {e.payload?.outputChars} 字
+                {e.payload?.skillId}:{e.payload?.name} · 码 {e.payload?.exitCode} · 出 {e.payload?.outputChars} 字
               </button>
             ))}
           </div>
@@ -330,6 +432,8 @@ export default function RunPanel({
                 <ToolCards events={t.events} onSelect={onSelectEvent} />
                 <RagChips events={t.events} />
                 <SkillTrace events={t.events} onSelect={onSelectEvent} />
+                <PlanTrace events={t.events} onSelect={onSelectEvent} />
+                <LoopTrace events={t.events} onSelect={onSelectEvent} />
                 {t.stats?.skillDisclosure && (
                   <div className="st-summary">
                     <span>能力包全量预载 {t.stats.skillDisclosure.fullPreloadChars} 字</span>

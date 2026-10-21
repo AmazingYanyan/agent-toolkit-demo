@@ -4,7 +4,7 @@ import { toolDefinitions, toolMeta, checkPermission, executeTool } from './tools
 import { retriever } from './rag.mjs';
 import {
   loadSkill,
-  matchSkill,
+  matchSkills,
   skillIndex,
   skillPackage,
   resourceCatalog,
@@ -15,6 +15,7 @@ import {
 import { mcpRegistry, toolServerId } from './mcp/registry.mjs';
 import { embedder } from './embedding.mjs';
 import { readDb } from './db.mjs';
+import { runAgentMode, isAgentMode, summarizeExtra, MODE_LABELS } from './modes/index.mjs';
 
 /**
  * 运行引擎：所有画布变化都由这里的真实事件驱动，前端不承担任何"假装执行"的职责。
@@ -59,8 +60,8 @@ const SKILL_TOOL_NAMES = new Set(['read_skill_resource', 'run_skill_script']);
  * 同一种业务能力可以只走其中一条，也可以两条都提供；这与 Function Calling 本身无关，
  * Function Calling 只是模型「提出调用请求」的协议，执行方式由应用决定。
  */
-export async function resolveTools(cfg) {
-  if (!cfg.functionCalling) return { defs: [], source: 'disabled', groups: [], local: [] };
+export async function resolveTools(cfg, { force = false } = {}) {
+  if (!cfg.functionCalling && !force) return { defs: [], source: 'disabled', groups: [], local: [] };
   const enabled = cfg.tools || [];
 
   // 兼容早期「把本地同名能力改走本地演示 MCP」的演示开关
@@ -91,17 +92,31 @@ export async function resolveTools(cfg) {
 }
 
 /**
- * Skill 能力包提供给模型的两个工具。
- * 关键点：工具描述里只有「标题 + 体积 + 适用场景」，没有正文；
- * 脚本只声明用途与参数，源码不进上下文。
+ * Skill 能力包提供给模型的工具。
+ *
+ * 多个 Skill 同时加载时，单靠 path / script 名无法定位（不同 Skill 可能有同名文件），
+ * 所以两个工具都必须带 skill_id。工具仍然只有一个统一入口，归属由参数说清。
+ * 工具描述里只有「归属 + 标题 + 体积 + 适用场景」，没有任何正文；脚本也不给源码。
  */
-export function buildSkillTools(catalog, cfg) {
+export function buildSkillTools(ctxs, cfg) {
   const tools = [];
 
-  const readable = [
-    ...catalog.references.map((r) => ({ ...r, kind: '参考方法' })),
-    ...catalog.assets.map((a) => ({ ...a, kind: '模板资源' })),
-  ];
+  const readable = [];
+  for (const c of ctxs) {
+    for (const r of c.catalog.references) {
+      readable.push({ skillId: c.id, skillName: c.name, kind: '参考方法', path: r.path, title: r.title, when: r.when, chars: r.chars });
+    }
+    for (const a of c.catalog.assets) {
+      readable.push({ skillId: c.id, skillName: c.name, kind: '模板资源', path: a.path, title: a.title, when: a.when, chars: a.chars });
+    }
+  }
+
+  const scripts = [];
+  for (const c of ctxs) {
+    for (const s of c.catalog.scripts) {
+      scripts.push({ skillId: c.id, skillName: c.name, ...s });
+    }
+  }
 
   if (cfg.skillRefs !== false && readable.length) {
     tools.push({
@@ -109,32 +124,42 @@ export function buildSkillTools(catalog, cfg) {
       function: {
         name: 'read_skill_resource',
         description:
-          '读取本 Skill 附带的参考资料正文。当前上下文里只有标题与体积，正文需要按需读取；' +
-          '只读当前任务真正需要的那一份，不要一次读完，也不要把无关资料读进来。' +
-          `最多嵌套读取 ${MAX_RESOURCE_DEPTH} 层。\n可用资源：\n` +
-          readable.map((r) => `- ${r.path}（${r.kind}）：${r.title}，${r.chars} 字。适用：${r.when}`).join('\n'),
+          '读取某个 Skill 附带的参考资料正文。必须同时给出 skill_id 与 path：不同 Skill 可能有同名文件，' +
+          '只有 skill_id + path 才能唯一定位。当前上下文里只有标题与体积，正文需要按需读取；' +
+          `只读当前任务真正需要的那一份，不要一次读完。最多嵌套读取 ${MAX_RESOURCE_DEPTH} 层。\n可用资源：\n` +
+          readable
+            .map(
+              (r) =>
+                `- skill_id="${r.skillId}"，path="${r.path}"（${r.kind}）：${r.title}，${r.chars} 字。适用：${r.when}`
+            )
+            .join('\n'),
         parameters: {
           type: 'object',
           properties: {
+            skill_id: {
+              type: 'string',
+              enum: [...new Set(readable.map((r) => r.skillId))],
+              description: '资源所属 Skill 的 id，必须是本次已加载的 Skill 之一',
+            },
             path: {
               type: 'string',
-              enum: readable.map((r) => r.path),
-              description: '资源相对路径，必须是上面列出的之一',
+              enum: [...new Set(readable.map((r) => r.path))],
+              description: '资源相对路径。同一路径可能存在于多个 Skill，必须配合 skill_id 才能定位',
             },
             reason: {
               type: 'string',
               description: '一句话说明为什么这次需要读它，便于审计',
             },
           },
-          required: ['path'],
+          required: ['skill_id', 'path'],
         },
       },
     });
   }
 
-  if (cfg.skillScripts !== false && catalog.scripts.length) {
+  if (cfg.skillScripts !== false && scripts.length) {
     const argProps = {};
-    for (const s of catalog.scripts) {
+    for (const s of scripts) {
       for (const [k, v] of Object.entries(s.args?.properties || {})) {
         if (!argProps[k]) argProps[k] = v;
       }
@@ -144,18 +169,27 @@ export function buildSkillTools(catalog, cfg) {
       function: {
         name: 'run_skill_script',
         description:
-          '运行本 Skill 内已登记的确定性脚本。只把标准输出返回给你，脚本源码不会进入上下文，' +
-          '你也不需要阅读源码，只需给出参数并解读返回结果。脚本无网络访问、无副作用。\n可用脚本：\n' +
-          catalog.scripts
-            .map((s) => `- ${s.name}：${s.title}。适用：${s.when}。输出：${s.outputFormat}`)
+          '运行某个 Skill 内已登记的确定性脚本。必须同时给出 skill_id 与 script。' +
+          '只把标准输出返回给你，脚本源码不会进入上下文，你也不需要阅读源码。' +
+          '脚本无网络访问、无副作用。\n可用脚本：\n' +
+          scripts
+            .map(
+              (s) =>
+                `- skill_id="${s.skillId}"，script="${s.name}"：${s.title}。适用：${s.when}。输出：${s.outputFormat}`
+            )
             .join('\n'),
         parameters: {
           type: 'object',
           properties: {
+            skill_id: {
+              type: 'string',
+              enum: [...new Set(scripts.map((s) => s.skillId))],
+              description: '脚本所属 Skill 的 id',
+            },
             script: {
               type: 'string',
-              enum: catalog.scripts.map((s) => s.name),
-              description: '脚本文件名，必须是上面列出的之一',
+              enum: [...new Set(scripts.map((s) => s.name))],
+              description: '脚本文件名。同名脚本可能存在于多个 Skill，必须配合 skill_id',
             },
             args: {
               type: 'object',
@@ -163,7 +197,7 @@ export function buildSkillTools(catalog, cfg) {
               properties: argProps,
             },
           },
-          required: ['script'],
+          required: ['skill_id', 'script'],
         },
       },
     });
@@ -189,24 +223,27 @@ function mcpPermission(fullName) {
  */
 export async function previewToolsSchema(cfg = {}) {
   const config = rawConfig();
-  const toolSetup = await resolveTools(cfg);
-
-  let skillCtx = null;
+  const toolSetup = await resolveTools(cfg, { force: isAgentMode(cfg.agentMode) });
+  const ctxs = [];
   let skillBlocked = null;
-  if (cfg.skill) {
-    const skill = loadSkill(cfg.skill);
-    const pkg = skillPackage(cfg.skill);
+  for (const id of cfg.skills || []) {
+    const skill = loadSkill(id);
+    const pkg = skillPackage(id);
     if (skill && pkg) {
-      skillCtx = { id: cfg.skill, name: skill.name, pkg, catalog: resourceCatalog(cfg.skill) };
-      if (!cfg.functionCalling) {
-        skillBlocked =
-          'Function Calling 未开启：能力包里的 resources / scripts 无法触达，本次只会把 SKILL.md 主指令作为 system 消息发出。';
-      }
+      ctxs.push({ id, name: skill.name, pkg, catalog: resourceCatalog(id) });
     }
   }
+  if (ctxs.length && !cfg.functionCalling) {
+    skillBlocked =
+      'Function Calling 未开启：能力包里的 resources / scripts 无法触达，本次只会把 SKILL.md 主指令作为 system 消息发出。';
+  }
 
-  const skillTools = skillCtx && cfg.functionCalling ? buildSkillTools(skillCtx.catalog, cfg) : [];
-  const defs = [...toolSetup.defs, ...skillTools];
+  const skillTools = ctxs.length && cfg.functionCalling ? buildSkillTools(ctxs, cfg) : [];
+  const modeOn = isAgentMode(cfg.agentMode);
+  // 08–11 章不把工具塞进原生 tools 参数：这里如实返回空，另附「可用工具」清单
+  const catalogDefs = [...toolSetup.defs, ...skillTools];
+  const defs = modeOn ? [] : catalogDefs;
+  const availableTools = modeOn ? catalogDefs.map((d) => d.function.name) : [];
 
   const sampleMessages = [
     {
@@ -248,19 +285,27 @@ export async function previewToolsSchema(cfg = {}) {
       mcp: toolSetup.defs.filter((d) => toolServerId(d.function.name)).map((d) => d.function.name),
       skill: skillTools.map((d) => d.function.name),
     },
-    skill: skillCtx
+    skill: ctxs.length
       ? {
-          id: skillCtx.id,
-          name: skillCtx.name,
-          references: skillCtx.catalog.references.length,
-          scripts: skillCtx.catalog.scripts.length,
-          assets: skillCtx.catalog.assets.length,
+          count: ctxs.length,
+          ids: ctxs.map((c) => c.id),
+          names: ctxs.map((c) => c.name),
+          references: ctxs.reduce((n, c) => n + c.catalog.references.length, 0),
+          scripts: ctxs.reduce((n, c) => n + c.catalog.scripts.length, 0),
+          assets: ctxs.reduce((n, c) => n + c.catalog.assets.length, 0),
         }
       : null,
     skillBlocked,
+    mode: cfg.agentMode || 'off',
+    modeNote: modeOn
+      ? `本模式（${cfg.agentMode}）不使用原生 tools 参数：可用工具 ${availableTools.length} 个以文本清单形式写进提示词，由模型在协议里「说出」要调用哪个。`
+      : null,
+    availableTools,
     note: defs.length
       ? '这份 JSON 就是请求体里的 tools 字段。模型没有「内置」这些工具，每次请求都是重新把清单递给它。'
-      : '本次请求不带 tools 参数：模型只能凭已有参数回答，无法访问任何外部数据。',
+      : modeOn
+        ? '本次请求确实不带 tools 参数——这是 08–11 章的机制本身，不是配置错误。'
+        : '本次请求不带 tools 参数：模型只能凭已有参数回答，无法访问任何外部数据。',
   };
 }
 
@@ -278,6 +323,7 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
     kbVersion: retriever.stats().version,
     retrieval: null,
     skill: null,
+    skills: [],
     skillDisclosure: null,
     mcp: false,
     mcpServers: [],
@@ -295,8 +341,12 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
     rag: Boolean(cfg.rag),
     ragMode: cfg.ragMode || config.retrieval?.mode || 'hybrid',
     embedding: embedder.ready() ? embedder.cfg().model : null,
-    skill: cfg.skill || null,
-    skillAuto: Boolean(cfg.skillAuto),
+    skills: cfg.skills || [],
+    skillMode: cfg.skillMode || 'auto',
+    skillAuto: cfg.skillMode !== 'all',
+    agentMode: cfg.agentMode || 'off',
+    agentModeLabel: MODE_LABELS[cfg.agentMode] || '单轮问答',
+    structuredOutput: Boolean(cfg.structuredOutput),
     skillRefs: cfg.skillRefs !== false,
     skillScripts: cfg.skillScripts !== false,
     dataVersion: db.version,
@@ -320,9 +370,9 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
       messages.push({ role: 'system', content: BASE_SYSTEM });
     }
 
-    // ---- Skill：索引 → 匹配 → 加载主指令 → 挂载能力包 ----
-    let skillCtx = null;
-    if (cfg.skill) {
+    // ---- Skill：索引 → 选择（可 0/1/多个）→ 加载主指令 → 挂载能力包 ----
+    let skillCtxs = [];
+    if ((cfg.skills || []).length) {
       const index = skillIndex();
       emit('skill_index_loaded', 'skill_index', {
         count: index.count,
@@ -332,133 +382,167 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
         note: '索引阶段只读每个 SKILL.md 的文件头（frontmatter），正文留在磁盘上；未命中的 Skill 正文不会被读取',
       });
 
-      const restrictId = cfg.skillAuto ? null : cfg.skill;
-      // 界面上明确指定了某一个 Skill（未开自动匹配）时视为显式选择，直接加载；
-      // 开了自动匹配才用关键词阈值来筛。
-      const forceMatch = !cfg.skillAuto && Boolean(cfg.skill);
-      const match = matchSkill(question, restrictId, 2, forceMatch);
-      emit('skill_matched', 'skill_index', {
+      const mode = cfg.skillMode === 'all' ? 'all' : 'auto';
+      const ms = matchSkills(question, cfg.skills, { mode, threshold: 2 });
+
+      // 先算出每个入选 Skill 的能力包，用于体积统计与冲突预检
+      const packages = new Map();
+      for (const s of ms.selected) {
+        const pkg = skillPackage(s.id);
+        if (pkg) packages.set(s.id, pkg);
+      }
+
+      // 跨 Skill 的同名资源：这正是「资源必须带 skill_id」的原因
+      const pathOwners = new Map();
+      for (const [id, pkg] of packages) {
+        for (const r of [...pkg.references, ...pkg.assets]) {
+          const arr = pathOwners.get(r.path) || [];
+          arr.push(id);
+          pathOwners.set(r.path, arr);
+        }
+      }
+      const duplicatePaths = [...pathOwners.entries()]
+        .filter(([, ids]) => ids.length > 1)
+        .map(([path, ids]) => ({ path, skills: ids }));
+
+      // 关键词重叠：同时加载两个 Skill 时，模型更容易混用两者的口径
+      const kwSets = ms.selected.map((s) => ({ id: s.id, name: s.name, set: new Set(s.keywords) }));
+      let sharedKeywords = [];
+      if (kwSets.length > 1) {
+        sharedKeywords = [...kwSets[0].set].filter((k) => kwSets.slice(1).every((x) => x.set.has(k)));
+      }
+
+      const totalInstructionChars = [...packages.values()].reduce(
+        (n, p) => n + p.totals.instructionChars,
+        0
+      );
+
+      emit('skill_selected', 'skill_index', {
         query: question,
-        scanned: match.scanned,
-        candidates: match.candidates,
-        restrict: restrictId || 'auto',
-        matched: match.matched,
-        forced: match.forced,
-        byScore: match.byScore,
-        name: match.item?.name || null,
-        id: match.item?.id || null,
-        score: match.score,
-        threshold: match.threshold,
-        hits: match.hits,
-        keywords: match.keywords,
-        note: match.forced
-          ? `本次是「指定 Skill」模式：直接加载 ${match.item?.name}（关键词得分 ${match.score} 仅供参考）。想要按问题自动挑选，请打开「按问题自动匹配」`
-          : match.matched
-            ? `在 ${match.scanned} 个 Skill 的索引中命中 ${match.item.name}（命中关键词：${match.hits.join('、') || match.item.name}），此时才读取它的主指令`
-            : `在 ${match.scanned} 个 Skill 的索引中未达到匹配阈值（${match.threshold} 分），因此不加载任何正文，上下文不增加任何 Skill 内容`,
+        mode,
+        threshold: ms.threshold,
+        scanned: ms.scanned,
+        candidates: ms.candidates,
+        scored: ms.scored,
+        selected: ms.selected.map((s) => ({ id: s.id, name: s.name, score: s.score, hits: s.hits })),
+        selectedCount: ms.selected.length,
+        totalInstructionChars,
+        duplicatePaths,
+        sharedKeywords,
+        note:
+          ms.selected.length === 0
+            ? `勾选了 ${ms.candidates} 个 Skill，但问题没有达到任何一个的关键词阈值（${ms.threshold} 分），因此本次不加载任何 Skill 主指令`
+            : mode === 'all'
+              ? `「全部加载」策略：勾选的 ${ms.selected.length} 个 Skill 全部加载主指令，合计 ${totalInstructionChars} 字。分数只用于展示，不参与筛选`
+              : `「自动匹配」策略：勾选 ${ms.candidates} 个，命中 ${ms.selected.length} 个（阈值 ${ms.threshold} 分），主指令合计 ${totalInstructionChars} 字`,
       });
 
-      if (match.matched && match.item) {
-        const skill = loadSkill(match.item.id);
-        const pkg = skillPackage(match.item.id);
-        if (skill) {
-          const bodyChars = skill.instructionChars;
-          stats.skill = {
-            id: skill.id,
-            name: skill.name,
-            version: skill.version,
-            loaded: true,
-            indexChars: index.indexChars,
-            bodyChars,
-            totalBodyChars: bodyChars,
-            refsLoaded: 0,
-            scriptsRun: 0,
-          };
-          messages.push({
-            role: 'system',
-            content: `【已加载 Skill：${skill.name}】\n请严格按照以下方法完成本次分析任务。\n\n${skill.instruction}`,
-          });
-          emit('skill_loaded', 'skill_loader', {
-            id: skill.id,
-            name: skill.name,
-            version: skill.version,
-            chars: bodyChars,
-            indexChars: index.indexChars,
-            totalBodyChars: bodyChars,
-            skippedBodyChars: 0,
-            path: skill.path,
-            preview: skill.instruction.slice(0, 400),
-            note: '读取的是主指令（SKILL.md）。它只是入口与路由，具体方法论拆在 references、确定性计算放在 scripts、模板放在 assets，都还没读',
-          });
+      for (let i = 0; i < ms.selected.length; i += 1) {
+        const item = ms.selected[i];
+        const skill = loadSkill(item.id);
+        if (!skill) continue;
+        messages.push({
+          role: 'system',
+          content: `【已加载 Skill：${skill.name}】\n请严格按照以下方法完成本次分析任务。\n\n${skill.instruction}`,
+        });
+        emit('skill_loaded', 'skill_loader', {
+          id: skill.id,
+          name: skill.name,
+          version: skill.version,
+          chars: skill.instructionChars,
+          indexChars: index.indexChars,
+          path: skill.path,
+          order: i + 1,
+          total: ms.selected.length,
+          preview: skill.instruction.slice(0, 400),
+          note:
+            ms.selected.length > 1
+              ? `两个主指令同时进入上下文：这是第 ${i + 1} 个。输出结构与口径可能互相干扰，需要靠系统提示词与用户问题收敛`
+              : '读取的是主指令（SKILL.md）。它只是入口与路由，具体方法论拆在 references、确定性计算放在 scripts、模板放在 assets，都还没读',
+        });
+        skillCtxs.push({
+          id: skill.id,
+          name: skill.name,
+          pkg: packages.get(skill.id),
+          catalog: resourceCatalog(skill.id),
+          refs: [],
+          scripts: [],
+        });
+      }
 
-          if (pkg) {
-            const catalog = resourceCatalog(skill.id);
-            skillCtx = {
-              id: skill.id,
-              name: skill.name,
-              pkg,
-              catalog,
-              refs: [],
-              scripts: [],
-              assets: [],
-              depth: 0,
-            };
-            emit('skill_package_mounted', 'skill_loader', {
-              skillId: skill.id,
-              name: skill.name,
-              instructionPath: skill.path,
-              instructionChars: bodyChars,
-              indexChars: index.indexChars,
-              references: pkg.references.map((r) => ({
-                path: r.path,
-                title: r.title,
-                when: r.when,
-                chars: r.chars,
-                seeAlso: r.seeAlso,
-                status: 'unloaded',
-              })),
-              scripts: pkg.scripts.map((s) => ({
-                name: s.name,
-                path: s.path,
-                title: s.title,
-                when: s.when,
-                chars: s.chars,
-                timeoutMs: s.timeoutMs,
-                network: s.network,
-                sideEffect: s.sideEffect,
-                status: 'not-run',
-              })),
-              assets: pkg.assets.map((a) => ({
-                path: a.path,
-                title: a.title,
-                when: a.when,
-                chars: a.chars,
-                status: 'unloaded',
-              })),
-              totals: pkg.totals,
-              mountedChars: bodyChars,
-              unreadChars: pkg.totals.packageChars - bodyChars,
-              note: '能力包已挂载：主指令进了上下文，references / scripts / assets 只有标题与体积，内容一个字节都没读。后续由模型自己决定读哪份、跑哪个',
-            });
-          }
-        }
-      } else {
-        stats.skill = {
-          id: cfg.skill,
-          name: match.item?.name || cfg.skill,
-          loaded: false,
-          indexChars: index.indexChars,
-          bodyChars: 0,
-          totalBodyChars: 0,
+      if (skillCtxs.length) {
+        const sum = (key) => skillCtxs.reduce((n, c) => n + (c.pkg?.totals?.[key] || 0), 0);
+        const totals = {
+          instructionChars: sum('instructionChars'),
+          referenceChars: sum('referenceChars'),
+          scriptChars: sum('scriptChars'),
+          assetChars: sum('assetChars'),
+          packageChars: sum('packageChars'),
         };
+        stats.skills = skillCtxs.map((c) => ({
+          id: c.id,
+          name: c.name,
+          loaded: true,
+          instructionChars: c.pkg?.totals?.instructionChars || 0,
+          packageChars: c.pkg?.totals?.packageChars || 0,
+          refsLoaded: 0,
+          scriptsRun: 0,
+        }));
+        emit('skill_package_mounted', 'skill_loader', {
+          count: skillCtxs.length,
+          skills: skillCtxs.map((c) => ({
+            skillId: c.id,
+            name: c.name,
+            instructionPath: `server/skills/${c.id}/SKILL.md`,
+            instructionChars: c.pkg?.totals?.instructionChars || 0,
+            packageChars: c.pkg?.totals?.packageChars || 0,
+            references: (c.pkg?.references || []).map((r) => ({
+              path: r.path,
+              title: r.title,
+              when: r.when,
+              chars: r.chars,
+              seeAlso: r.seeAlso,
+              status: 'unloaded',
+            })),
+            scripts: (c.pkg?.scripts || []).map((s) => ({
+              name: s.name,
+              path: s.path,
+              title: s.title,
+              when: s.when,
+              chars: s.chars,
+              timeoutMs: s.timeoutMs,
+              network: s.network,
+              sideEffect: s.sideEffect,
+              status: 'not-run',
+            })),
+            assets: (c.pkg?.assets || []).map((a) => ({
+              path: a.path,
+              title: a.title,
+              when: a.when,
+              chars: a.chars,
+              status: 'unloaded',
+            })),
+          })),
+          totals,
+          mountedChars: totals.instructionChars,
+          unreadChars: totals.packageChars - totals.instructionChars,
+          duplicatePaths,
+          sharedKeywords,
+          note:
+            '能力包已挂载：主指令进了上下文，references / scripts / assets 只有标题与体积，内容一个字节都没读。' +
+            '资源归属由 skill_id + path 唯一确定，所以多个 Skill 同时加载也不会读错文件',
+        });
+      } else {
         emit('skill_skipped', 'skill_loader', {
-          id: cfg.skill,
-          name: match.item?.name || null,
-          score: match.score,
-          threshold: match.threshold,
-          indexChars: index.indexChars,
-          savedChars: index.totalBodyChars || 0,
-          note: '问题与现有 Skill 不匹配：本次不加载任何 Skill 正文，模型按普通方式回答',
+          ids: cfg.skills,
+          mode,
+          threshold: ms.threshold,
+          scored: ms.scored,
+          savedChars: [...packages.values()].reduce((n, p) => n + p.totals.instructionChars, 0),
+          note:
+            mode === 'all'
+              ? '没有勾选任何 Skill，或勾选的 Skill 目录不存在'
+              : '问题与勾选的 Skill 都不匹配：本次不加载任何主指令，模型按普通方式回答',
         });
       }
     }
@@ -553,19 +637,25 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
     messages.push({ role: 'user', content: question });
 
     // ---- 工具 ----
-    const toolSetup = await resolveTools(cfg);
+    // 08–11 章不把清单塞进原生 tools 参数，但同样需要一份工具目录来「说出」要调用什么，
+    // 所以这里强制解析一次。
+    const agentMode = isAgentMode(cfg.agentMode) ? cfg.agentMode : null;
+    const toolSetup = await resolveTools(cfg, { force: Boolean(agentMode) });
     // 能力包工具依赖 Function Calling：没开工具调用就不提供这两个工具，
     // 模型只能读到主指令，读不到 references、也跑不了 scripts。
     const skillTools =
-      skillCtx && cfg.functionCalling ? buildSkillTools(skillCtx.catalog, cfg) : [];
-    if (skillCtx && !cfg.functionCalling && skillCtx.catalog.references.length) {
-      emit('skill_tools_unavailable', 'skill_loader', {
-        skillId: skillCtx.id,
-        name: skillCtx.name,
-        references: skillCtx.catalog.references.length,
-        scripts: skillCtx.catalog.scripts.length,
-        note: '能力包里的参考资料与脚本需要 Function Calling 才能按需触达：没开工具调用，模型拿不到读资源 / 跑脚本这两个工具，只能读主指令。这也是 Skill 与 Harness 的分工边界',
-      });
+      skillCtxs.length && cfg.functionCalling ? buildSkillTools(skillCtxs, cfg) : [];
+    if (skillCtxs.length && !cfg.functionCalling) {
+      const refCount = skillCtxs.reduce((n, c) => n + c.catalog.references.length + c.catalog.assets.length, 0);
+      const scriptCount = skillCtxs.reduce((n, c) => n + c.catalog.scripts.length, 0);
+      if (refCount || scriptCount) {
+        emit('skill_tools_unavailable', 'skill_loader', {
+          skills: skillCtxs.map((c) => c.id),
+          references: refCount,
+          scripts: scriptCount,
+          note: '能力包里的参考资料与脚本需要 Function Calling 才能按需触达：没开工具调用，模型拿不到读资源 / 跑脚本这两个工具，只能读主指令。这也是 Skill 与 Harness 的分工边界',
+        });
+      }
     }
     const allDefs = [...toolSetup.defs, ...skillTools];
     const toolSource = skillTools.length
@@ -611,6 +701,42 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
       });
     }
 
+    // ---- 08–11 章：交给对应的控制流 ----
+    let round = 0;
+    let finalAnswer = '';
+
+    if (agentMode) {
+      stats.agentMode = agentMode;
+      emit('mode_started', 'app', {
+        mode: agentMode,
+        modeLabel: MODE_LABELS[agentMode],
+        tools: allDefs.map((d) => d.function.name),
+        maxSteps: Number(cfg.maxToolRounds || 4),
+        note:
+          agentMode === 'structured'
+            ? '本模式不进入循环：一次结构化抽取 + 程序侧校验与判定'
+            : agentMode === 'plan'
+              ? '本模式分三段：先规划，再执行计划，最后汇总'
+              : agentMode === 'react'
+                ? '本模式用文本协议循环：Thought → Action → Observation'
+                : '本模式是目标循环：每轮判断进展并决定下一步，直到声明完成或预算用尽',
+      });
+      const outcome = await runAgentMode({
+        mode: agentMode,
+        config,
+        cfg,
+        question,
+        messages,
+        allDefs,
+        skillCtxs,
+        emit,
+        signal,
+        stats,
+      });
+      finalAnswer = outcome.answer;
+      round = outcome.rounds || 0;
+      stats.modeResult = summarizeExtra(agentMode, outcome.extra);
+    } else {
     // 本次真实发送的请求体：与 llm.mjs 里构造的 body 同构
     const requestBody = {
       model: config.model,
@@ -638,8 +764,6 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
     });
 
     // ---- 主循环 ----
-    let round = 0;
-    let finalAnswer = '';
     const maxRounds = Number(cfg.maxToolRounds || config.maxToolRounds || 4);
 
     while (round < maxRounds) {
@@ -803,25 +927,38 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
           via: isSkillTool ? 'skill' : serverId ? 'mcp' : 'local',
         }, 'running');
 
-        // ---- Skill 资源按需读取 ----
+        // ---- Skill 资源按需读取（必须带 skill_id 才能定位）----
         if (call.name === 'read_skill_resource') {
           try {
-            if (skillCtx.refs.length >= 8) {
+            const target = skillCtxs.find((c) => c.id === args.skill_id);
+            if (!target) {
+              throw new Error(
+                `本次未加载 Skill：${args.skill_id || '（未提供 skill_id）'}；可用的是 ${skillCtxs
+                  .map((c) => c.id)
+                  .join('、')}`
+              );
+            }
+            const totalRefs = skillCtxs.reduce((n, c) => n + c.refs.length, 0);
+            if (totalRefs >= 8) {
               throw new Error('本次已读取 8 份资料，为避免上下文膨胀已停止继续读取');
             }
             // 层级按「谁指向谁」计算：直接读取算第 1 层，读的是某份资料的 seeAlso 算第 2 层
-            const parent = skillCtx.refs.find((r) => (r.seeAlso || []).includes(args.path));
+            const allRefs = skillCtxs.flatMap((c) => c.refs);
+            const parent = allRefs.find((r) => (r.seeAlso || []).includes(args.path));
             const depth = parent ? parent.depth + 1 : 1;
-            const r = readResource(skillCtx.id, args.path, depth, args.reason);
-            skillCtx.refs.push(r);
+            const r = readResource(target.id, args.path, depth, args.reason);
+            target.refs.push(r);
             stats.toolCalls += 1;
-            const refChars = skillCtx.refs.reduce((n, x) => n + x.chars, 0);
+            const refChars = target.refs.reduce((n, x) => n + x.chars, 0);
             const unloaded = [
-              ...skillCtx.catalog.references.map((x) => x.path),
-              ...skillCtx.catalog.assets.map((x) => x.path),
-            ].filter((p) => !skillCtx.refs.some((x) => x.path === p));
+              ...target.catalog.references.map((x) => x.path),
+              ...target.catalog.assets.map((x) => x.path),
+            ].filter((p) => !target.refs.some((x) => x.path === p));
 
             emit('skill_resource_read', 'skill_refs', {
+              skillId: target.id,
+              skillName: target.name,
+              skillCount: skillCtxs.length,
               path: r.path,
               title: r.title,
               chars: r.chars,
@@ -829,19 +966,19 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
               reason: r.reason,
               seeAlso: r.seeAlso,
               cumulativeRefChars: refChars,
-              loaded: skillCtx.refs.map((x) => x.path),
+              loaded: target.refs.map((x) => x.path),
               stillUnloaded: unloaded,
               preview: r.text.slice(0, 300),
-              note: '模型主动请求 → 应用校验白名单 → 读文件 → 作为工具结果返回。未请求的文件正文仍在磁盘上，此刻仍不在上下文里',
+              note: '模型给出 skill_id + path → 应用在对应 Skill 目录内校验白名单 → 读文件 → 作为工具结果返回。未请求的文件正文仍在磁盘上',
             }, 'success');
 
             messages.push({ role: 'tool', tool_call_id: call.id, content: r.text });
             emit('tool_call_completed', 'skill_refs', {
               callId: call.id,
               toolName: call.name,
-              summary: `${r.title} ${r.chars} 字`,
-              source: `${skillCtx.name} / ${r.path}`,
-              result: { path: r.path, chars: r.chars, depth: r.depth },
+              summary: `${target.name} · ${r.title} ${r.chars} 字`,
+              source: `${target.name} / ${r.path}`,
+              result: { skill_id: target.id, path: r.path, chars: r.chars, depth: r.depth },
               via: 'skill',
             });
             continue;
@@ -863,11 +1000,22 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
         // ---- Skill 脚本受控执行 ----
         if (call.name === 'run_skill_script') {
           try {
-            const r = await runScript(skillCtx.id, args.script, args.args || {});
-            skillCtx.scripts.push(r);
+            const target = skillCtxs.find((c) => c.id === args.skill_id);
+            if (!target) {
+              throw new Error(
+                `本次未加载 Skill：${args.skill_id || '（未提供 skill_id）'}；可用的是 ${skillCtxs
+                  .map((c) => c.id)
+                  .join('、')}`
+              );
+            }
+            const r = await runScript(target.id, args.script, args.args || {});
+            target.scripts.push(r);
             stats.toolCalls += 1;
 
             emit('skill_script_run', 'skill_script', {
+              skillId: target.id,
+              skillName: target.name,
+              skillCount: skillCtxs.length,
               script: r.script,
               name: r.name,
               title: r.title,
@@ -899,10 +1047,10 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
             emit('tool_call_completed', 'skill_script', {
               callId: call.id,
               toolName: call.name,
-              summary: `${r.name} 退出码 ${r.exitCode} · 输出 ${r.outputChars} 字（源码 ${r.scriptChars} 字未进上下文）`,
-              source: `${skillCtx.name} / ${r.script}`,
+              summary: `${target.name} · ${r.name} 退出码 ${r.exitCode} · 输出 ${r.outputChars} 字（源码 ${r.scriptChars} 字未进上下文）`,
+              source: `${target.name} / ${r.script}`,
               durationMs: r.durationMs,
-              result: { exitCode: r.exitCode, outputChars: r.outputChars },
+              result: { skill_id: target.id, exitCode: r.exitCode, outputChars: r.outputChars },
               via: 'skill',
             });
             continue;
@@ -991,50 +1139,74 @@ export async function executeRun({ runId, question, cfg, history = [], emit, sig
         throw new LLMError(`已达到最大模型调用轮次（${maxRounds}）`);
       }
     }
+    }
 
-    // ---- 渐进式披露的实际开销 ----
-    if (skillCtx) {
-      const uniqRefs = [];
-      for (const r of skillCtx.refs) if (!uniqRefs.some((x) => x.path === r.path)) uniqRefs.push(r);
-      const uniqScripts = [];
-      for (const s of skillCtx.scripts) if (!uniqScripts.some((x) => x.name === s.name)) uniqScripts.push(s);
+    // ---- 渐进式披露的实际开销（多 Skill 汇总）----
+    if (skillCtxs.length) {
+      const perSkill = skillCtxs.map((c) => {
+        const uniqRefs = [];
+        for (const r of c.refs) if (!uniqRefs.some((x) => x.path === r.path)) uniqRefs.push(r);
+        const uniqScripts = [];
+        for (const s of c.scripts) if (!uniqScripts.some((x) => x.name === s.name)) uniqScripts.push(s);
+        return {
+          skillId: c.id,
+          name: c.name,
+          instructionChars: c.pkg?.totals?.instructionChars || 0,
+          packageChars: c.pkg?.totals?.packageChars || 0,
+          refsLoaded: uniqRefs.map((r) => ({ path: r.path, chars: r.chars, depth: r.depth })),
+          refChars: uniqRefs.reduce((n, x) => n + x.chars, 0),
+          refsTotal: c.pkg?.totals?.referenceChars || 0,
+          scriptsRun: uniqScripts.map((s) => ({
+            name: s.name,
+            scriptChars: s.scriptChars,
+            outputChars: s.outputChars,
+            exitCode: s.exitCode,
+          })),
+          scriptOutputChars: uniqScripts.reduce((n, x) => n + x.outputChars, 0),
+          scriptSourceChars: uniqScripts.reduce((n, x) => n + x.scriptChars, 0),
+          refsSkipped: c.catalog.references.filter((r) => !uniqRefs.some((x) => x.path === r.path)).length,
+          assetsSkipped: c.catalog.assets.filter((a) => !uniqRefs.some((x) => x.path === a.path)).length,
+          scriptsNotRun: c.catalog.scripts.filter((s) => !uniqScripts.some((x) => x.name === s.name)).length,
+          toolCalls: c.refs.length + c.scripts.length,
+        };
+      });
 
-      const refChars = uniqRefs.reduce((n, x) => n + x.chars, 0);
-      const scriptOutputChars = skillCtx.scripts.reduce((n, x) => n + x.outputChars, 0);
-      const scriptSourceChars = uniqScripts.reduce((n, x) => n + x.scriptChars, 0);
+      const sumOf = (key) => perSkill.reduce((n, p) => n + (p[key] || 0), 0);
       const indexChars = skillIndex().indexChars;
-      const totals = skillCtx.pkg.totals;
-      const fullPreload = indexChars + totals.packageChars;
-      const actual = indexChars + totals.instructionChars + refChars + scriptOutputChars;
+      const packageChars = sumOf('packageChars');
+      const fullPreload = indexChars + packageChars;
+      const actual = indexChars + sumOf('instructionChars') + sumOf('refChars') + sumOf('scriptOutputChars');
+
       stats.skillDisclosure = {
-        skillId: skillCtx.id,
-        name: skillCtx.name,
+        skillCount: skillCtxs.length,
+        skillIds: skillCtxs.map((c) => c.id),
+        skillNames: skillCtxs.map((c) => c.name),
+        perSkill,
         indexChars,
-        instructionChars: totals.instructionChars,
-        refsLoaded: uniqRefs.map((r) => ({ path: r.path, chars: r.chars, depth: r.depth })),
-        refChars,
-        refsTotal: totals.referenceChars,
-        scriptsRun: uniqScripts.map((s) => ({
-          name: s.name,
-          scriptChars: s.scriptChars,
-          outputChars: s.outputChars,
-          exitCode: s.exitCode,
-        })),
-        scriptOutputChars,
-        scriptSourceChars,
-        assetsTotal: totals.assetChars,
+        instructionChars: sumOf('instructionChars'),
+        refsLoaded: perSkill.flatMap((p) => p.refsLoaded.map((r) => ({ ...r, skillId: p.skillId }))),
+        refChars: sumOf('refChars'),
+        refsTotal: sumOf('refsTotal'),
+        scriptsRun: perSkill.flatMap((p) => p.scriptsRun.map((s) => ({ ...s, skillId: p.skillId }))),
+        scriptOutputChars: sumOf('scriptOutputChars'),
+        scriptSourceChars: sumOf('scriptSourceChars'),
+        assetsTotal: sumOf('assetsSkipped'),
         fullPreloadChars: fullPreload,
         actualChars: actual,
         savedChars: Math.max(0, fullPreload - actual),
-        refsSkipped: skillCtx.catalog.references.filter((r) => !uniqRefs.some((x) => x.path === r.path)).length,
-        assetsSkipped: skillCtx.catalog.assets.filter((a) => !uniqRefs.some((x) => x.path === a.path)).length,
-        scriptsNotRun: skillCtx.catalog.scripts.filter((s) => !uniqScripts.some((x) => x.name === s.name)).length,
-        toolCalls: skillCtx.refs.length + skillCtx.scripts.length,
+        refsSkipped: sumOf('refsSkipped'),
+        assetsSkipped: sumOf('assetsSkipped'),
+        scriptsNotRun: sumOf('scriptsNotRun'),
+        toolCalls: sumOf('toolCalls'),
         tokenUsage: { prompt: stats.promptTokens, completion: stats.completionTokens },
       };
-      if (stats.skill) {
-        stats.skill.refsLoaded = uniqRefs.length;
-        stats.skill.scriptsRun = uniqScripts.length;
+
+      for (const p of perSkill) {
+        const s = stats.skills.find((x) => x.id === p.skillId);
+        if (s) {
+          s.refsLoaded = p.refsLoaded.length;
+          s.scriptsRun = p.scriptsRun.length;
+        }
       }
     }
 
