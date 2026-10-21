@@ -18,9 +18,9 @@ import { ensureDb, readDb, resetDb, computeMetrics, runRules, findCompany } from
 import { TOOL_REGISTRY } from './tools.mjs';
 import { retriever } from './rag.mjs';
 import { embedder } from './embedding.mjs';
-import { listSkills, loadSkill, skillIndex } from './skills.mjs';
+import { listSkills, loadSkill, skillIndex, skillPackage, readResource, runScript, readSkillFile } from './skills.mjs';
 import { probeModel } from './llm.mjs';
-import { createEmitter, executeRun } from './runner.mjs';
+import { createEmitter, executeRun, previewToolsSchema } from './runner.mjs';
 import { mcpRegistry } from './mcp/registry.mjs';
 import { createRun, appendEvent, finishRun, getRun, listRuns, clearRuns } from './runs.mjs';
 
@@ -255,10 +255,58 @@ app.get('/api/skills/index', (_req, res) => {
   res.json(skillIndex());
 });
 
+/** Skill 能力包：主指令 + references / scripts / assets 清单与体积（不含内容） */
 app.get('/api/skills/:id', (req, res) => {
-  const skill = loadSkill(req.params.id);
-  if (!skill) return res.status(404).json({ error: '未找到 Skill' });
-  res.json(skill);
+  const pkg = skillPackage(req.params.id);
+  if (!pkg) return res.status(404).json({ error: '未找到 Skill' });
+  // body 是早期字段名，保留兼容
+  res.json({ ...pkg, body: pkg.instruction, bodyChars: pkg.instructionChars });
+});
+
+/** 读取白名单内的某个 reference / asset 正文（只读，不触发模型） */
+app.get('/api/skills/:id/resource', (req, res) => {
+  const rel = String(req.query.path || '');
+  if (!rel) return res.status(400).json({ error: '缺少 path' });
+  try {
+    const r = readResource(req.params.id, rel, 1, '人工查看');
+    res.json(r);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** 人工查看包内任意文件（含脚本源码）。不参与模型链路 */
+app.get('/api/skills/:id/source', (req, res) => {
+  const rel = String(req.query.path || '');
+  if (!rel) return res.status(400).json({ error: '缺少 path' });
+  try {
+    res.json(readSkillFile(req.params.id, rel));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** 人工试跑已登记脚本：走的是和运行时完全相同的校验与执行链路 */
+app.post('/api/skills/:id/run', async (req, res) => {
+  const { script, args } = req.body || {};
+  if (!script) return res.status(400).json({ error: '缺少 script' });
+  try {
+    res.json(await runScript(req.params.id, script, args || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * 工具 Schema 预览：不运行模型，只回答「如果现在点运行，会发给模型什么」。
+ * 返回真正会出现在请求体 tools 字段里的那份 JSON。
+ */
+app.post('/api/tools/schema', async (req, res) => {
+  try {
+    res.json(await previewToolsSchema(req.body || {}));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------------- MCP ----------------

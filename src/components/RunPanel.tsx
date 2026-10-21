@@ -110,29 +110,74 @@ function SkillTrace({ events, onSelect }: { events: RunEvent[]; onSelect: (e: Ru
   const match = events.find((e) => e.event_type === 'skill_matched');
   const loaded = events.find((e) => e.event_type === 'skill_loaded');
   const skipped = events.find((e) => e.event_type === 'skill_skipped');
+  const pkg = events.find((e) => e.event_type === 'skill_package_mounted');
+  const blocked = events.find((e) => e.event_type === 'skill_tools_unavailable');
+  const refs = events.filter((e) => e.event_type === 'skill_resource_read');
+  const scripts = events.filter((e) => e.event_type === 'skill_script_run');
   const tail = loaded || skipped;
+
   return (
-    <div className="skill-trace">
-      <button className="st-step" onClick={() => onSelect(idx)}>
-        <span className="st-k">索引</span>
-        <span className="st-v">
-          {idx.payload?.count} 个 · {idx.payload?.indexChars} 字
-        </span>
-      </button>
-      <span className="st-arrow">→</span>
-      <button className="st-step" onClick={() => onSelect(match || idx)}>
-        <span className="st-k">匹配</span>
-        <span className="st-v">
-          {match?.payload?.matched ? `命中 · ${match.payload.score} 分` : '未命中'}
-        </span>
-      </button>
-      <span className="st-arrow">→</span>
-      <button className="st-step" onClick={() => tail && onSelect(tail)}>
-        <span className="st-k">加载</span>
-        <span className="st-v">
-          {loaded ? `正文 ${loaded.payload?.chars} 字` : skipped ? '未读正文' : '—'}
-        </span>
-      </button>
+    <div className="skill-trace-wrap">
+      <div className="skill-trace">
+        <button className="st-step" onClick={() => onSelect(idx)}>
+          <span className="st-k">索引</span>
+          <span className="st-v">
+            {idx.payload?.count} 个 · {idx.payload?.indexChars} 字
+          </span>
+        </button>
+        <span className="st-arrow">→</span>
+        <button className="st-step" onClick={() => onSelect(match || idx)}>
+          <span className="st-k">匹配</span>
+          <span className="st-v">
+            {match?.payload?.matched ? `命中 · ${match.payload.score} 分` : '未命中'}
+          </span>
+        </button>
+        <span className="st-arrow">→</span>
+        <button className="st-step" onClick={() => tail && onSelect(tail)}>
+          <span className="st-k">主指令</span>
+          <span className="st-v">{loaded ? `${loaded.payload?.chars} 字` : skipped ? '未读' : '—'}</span>
+        </button>
+        {pkg && (
+          <>
+            <span className="st-arrow">→</span>
+            <button className="st-step" onClick={() => onSelect(pkg)}>
+              <span className="st-k">能力包</span>
+              <span className="st-v">
+                {pkg.payload?.references?.length || 0} 资料 / {pkg.payload?.scripts?.length || 0} 脚本
+              </span>
+            </button>
+          </>
+        )}
+      </div>
+
+      {pkg && (
+        <div className="st-pkg">
+          <div className="st-pkg-head">
+            <span>按需取用</span>
+            <span className="st-pkg-meta">
+              资料 {refs.length}/{pkg.payload?.references?.length || 0} · 脚本 {scripts.length}/
+              {pkg.payload?.scripts?.length || 0}
+            </span>
+          </div>
+          {refs.length === 0 && scripts.length === 0 && (
+            <div className="st-idle">本次没有读取任何资料、也没有执行脚本</div>
+          )}
+          <div className="st-chips">
+            {refs.map((e) => (
+              <button className="st-chip ref" key={e.event_id} onClick={() => onSelect(e)}>
+                {String(e.payload?.path || '').replace(/^(references|assets)\//, '')} · {e.payload?.chars} 字
+              </button>
+            ))}
+            {scripts.map((e) => (
+              <button className="st-chip script" key={e.event_id} onClick={() => onSelect(e)}>
+                {e.payload?.name} · 码 {e.payload?.exitCode} · 出 {e.payload?.outputChars} 字
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {blocked && <div className="note warn" style={{ marginTop: 6 }}>{blocked.payload?.note}</div>}
     </div>
   );
 }
@@ -285,6 +330,22 @@ export default function RunPanel({
                 <ToolCards events={t.events} onSelect={onSelectEvent} />
                 <RagChips events={t.events} />
                 <SkillTrace events={t.events} onSelect={onSelectEvent} />
+                {t.stats?.skillDisclosure && (
+                  <div className="st-summary">
+                    <span>能力包全量预载 {t.stats.skillDisclosure.fullPreloadChars} 字</span>
+                    <span className="st-summary-arrow">→</span>
+                    <span className="on">本次实际进上下文 {t.stats.skillDisclosure.actualChars} 字</span>
+                    <span className="st-summary-save">
+                      省 {t.stats.skillDisclosure.savedChars} 字（
+                      {Math.round(
+                        (t.stats.skillDisclosure.savedChars /
+                          Math.max(1, t.stats.skillDisclosure.fullPreloadChars)) *
+                          100
+                      )}
+                      %）
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           ))}

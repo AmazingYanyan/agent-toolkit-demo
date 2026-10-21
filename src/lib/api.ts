@@ -38,6 +38,13 @@ export const api = {
   skills: () => json<any[]>('/api/skills'),
   skillsIndex: () => json<any>('/api/skills/index'),
   skill: (id: string) => json<any>(`/api/skills/${id}`),
+  skillResource: (id: string, relPath: string) =>
+    json<any>(`/api/skills/${id}/resource?path=${encodeURIComponent(relPath)}`),
+  skillSource: (id: string, relPath: string) =>
+    json<any>(`/api/skills/${id}/source?path=${encodeURIComponent(relPath)}`),
+  skillRun: (id: string, script: string, args: any) =>
+    json<any>(`/api/skills/${id}/run`, { method: 'POST', body: JSON.stringify({ script, args }) }),
+  toolSchema: (cfg: any) => json<any>('/api/tools/schema', { method: 'POST', body: JSON.stringify(cfg) }),
   mcpServers: () => json<any>('/api/mcp/servers'),
   mcpSync: () => json<any>('/api/mcp/sync', { method: 'POST' }),
   mcpTest: (id: string) => json<any>(`/api/mcp/servers/${id}/test`, { method: 'POST' }),

@@ -384,6 +384,13 @@ export function HealthModal({ onClose, onChanged }: { onClose: () => void; onCha
   );
 }
 
+/** 演示用的示例参数：让「试跑脚本」一键就能看到真实输出 */
+const DEMO_ARGS: Record<string, any> = {
+  'calculate_ratios.py': { assets: 1000, liabilities: 750, revenue_current: 800, revenue_prior: 1000, ocf: -100 },
+  'validate_data.py': { assets: 1000, liabilities: 750, revenue_current: 800, revenue_prior: 1000, ocf: -100 },
+  'check_clause_coverage.py': { present: 'party,payment,breach', contract_type: 'purchase' },
+};
+
 export function SkillModal({
   id,
   onClose,
@@ -393,78 +400,465 @@ export function SkillModal({
   onClose: () => void;
   index?: any;
 }) {
-  const [skill, setSkill] = useState<any>(null);
+  const [pkg, setPkg] = useState<any>(null);
+  const [sel, setSel] = useState('SKILL.md');
+  const [file, setFile] = useState<any>(null);
+  const [argsText, setArgsText] = useState('{}');
+  const [runOut, setRunOut] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [showSrc, setShowSrc] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
   useEffect(() => {
-    api.skill(id).then(setSkill).catch(() => setSkill(null));
+    api
+      .skill(id)
+      .then((p) => {
+        setPkg(p);
+        setSel('SKILL.md');
+      })
+      .catch(() => setPkg(null));
   }, [id]);
+
+  const scriptOf = useMemo(() => {
+    const m: Record<string, any> = {};
+    for (const s of pkg?.scripts || []) m[s.path] = s;
+    return m;
+  }, [pkg]);
+
+  useEffect(() => {
+    if (!pkg) return;
+    setRunOut(null);
+    setShowSrc(false);
+    setErr(null);
+    if (sel === 'SKILL.md') {
+      setFile({ path: 'SKILL.md', text: pkg.instruction, chars: pkg.instructionChars, humanOnly: false });
+      return;
+    }
+    const s = scriptOf[sel];
+    if (s) {
+      setArgsText(JSON.stringify(DEMO_ARGS[s.name] || {}, null, 1));
+      api.skillSource(id, sel).then(setFile).catch(() => setFile(null));
+      return;
+    }
+    api.skillResource(id, sel).then(setFile).catch(() => setFile(null));
+  }, [sel, pkg, id, scriptOf]);
+
+  const activeScript = scriptOf[sel];
+
+  const runIt = async () => {
+    if (!activeScript) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const args = JSON.parse(argsText || '{}');
+      setRunOut(await api.skillRun(id, activeScript.name, args));
+    } catch (e: any) {
+      setErr(e.message || '执行失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const total = pkg?.totals || {};
 
   return (
     <Modal
-      title={skill?.name || 'Skill'}
-      sub={skill ? `${skill.path} · 元数据 ${skill.indexChars} 字 / 正文 ${skill.bodyChars} 字 · v${skill.version}` : '读取中…'}
+      title={pkg?.name || 'Skill'}
+      sub={
+        pkg
+          ? `${pkg.path} · v${pkg.version} · 索引 ${index?.indexChars ?? pkg.indexChars} 字 / 能力包 ${total.packageChars || 0} 字`
+          : '读取中…'
+      }
       onClose={onClose}
-      wide
+      xwide
       footer={
         <button className="btn btn-primary" onClick={onClose}>
           关闭
         </button>
       }
     >
-      {skill && (
+      {pkg && (
         <>
           <div className="note" style={{ marginBottom: 12 }}>
-            {skill.description}
+            {pkg.description}
           </div>
 
-          <div className="section-title" style={{ marginTop: 2 }}>
-            Skill 是怎么被加载的
+          <div className="pkg-stats">
+            <div className="pkg-stat">
+              <span>索引（常驻）</span>
+              <b>{index?.indexChars ?? pkg.indexChars} 字</b>
+            </div>
+            <div className="pkg-stat">
+              <span>主指令 SKILL.md</span>
+              <b>{total.instructionChars} 字</b>
+            </div>
+            <div className="pkg-stat">
+              <span>references 合计</span>
+              <b>{total.referenceChars} 字</b>
+            </div>
+            <div className="pkg-stat">
+              <span>scripts 源码</span>
+              <b>{total.scriptChars} 字</b>
+            </div>
+            <div className="pkg-stat">
+              <span>assets</span>
+              <b>{total.assetChars} 字</b>
+            </div>
+            <div className="pkg-stat accent">
+              <span>全量预载</span>
+              <b>{total.packageChars} 字</b>
+            </div>
           </div>
-          <div className="skill-flow">
+
+          <div className="skill-flow" style={{ marginBottom: 14 }}>
             <div className="sf-head">
-              <span>三步：索引 → 匹配 → 加载</span>
-              <span className="mono-tag">{index?.count ?? 1} 个 Skill 在索引中</span>
+              <span>渐进式披露：索引 → 主指令 → 按需取用</span>
+              <span className="mono-tag">4 步</span>
             </div>
             <div className="sf-step">
               <span className="sf-no">1</span>
               <div>
-                <b>启动时只读索引</b>
+                <b>只读文件头</b>
                 <span className="sf-sub">
-                  全部 {index?.count ?? 1} 个 Skill 的元数据合计 {index?.indexChars ?? skill.indexChars} 字常驻内存；
-                  所有 SKILL.md 的正文合计 {index?.totalBodyChars ?? skill.bodyChars} 字，此时一个字节都没读
+                  {index?.count ?? 1} 个 Skill 的元数据合计 {index?.indexChars ?? pkg.indexChars} 字进索引；正文一个字节都没读
                 </span>
               </div>
             </div>
-            <div className="sf-arrow">↓ 用户提问后，用问题文本在索引里做关键词打分</div>
+            <div className="sf-arrow">↓ 用问题文本在索引里打分，达到阈值才继续</div>
             <div className="sf-step">
               <span className="sf-no">2</span>
               <div>
-                <b>命中判断</b>
-                <span className="sf-sub">
-                  命中关键词：{skill.keywords?.join('、') || '—'}；达到阈值才进入第 3 步，否则本次不加载任何正文
-                </span>
+                <b>加载主指令</b>
+                <span className="sf-sub">{total.instructionChars} 字。它只是入口与路由，不是全部方法论</span>
               </div>
             </div>
-            <div className="sf-arrow">↓ 只读命中的这一个</div>
+            <div className="sf-arrow">↓ 主指令里写明「什么情况下读哪份、跑哪个」</div>
             <div className="sf-step">
               <span className="sf-no">3</span>
               <div>
-                <b>读取正文并注入上下文</b>
+                <b>按需读资料</b>
                 <span className="sf-sub">
-                  本 Skill 正文 {skill.bodyChars} 字；其余 {(index?.totalBodyChars ?? 0) - skill.bodyChars > 0
-                    ? `${(index?.totalBodyChars ?? 0) - skill.bodyChars} 字`
-                    : '0 字'}{' '}
-                  始终留在磁盘上
+                  {pkg.references?.length || 0} 份 reference 共 {total.referenceChars} 字，只有模型主动请求的那一份会进上下文
+                </span>
+              </div>
+            </div>
+            <div className="sf-arrow">↓ 需要确定性计算时</div>
+            <div className="sf-step">
+              <span className="sf-no">4</span>
+              <div>
+                <b>按需跑脚本</b>
+                <span className="sf-sub">
+                  {pkg.scripts?.length || 0} 个脚本共 {total.scriptChars} 字源码；模型只拿到标准输出，源码不进上下文
                 </span>
               </div>
             </div>
           </div>
 
+          <div className="pkg-explorer">
+            <div className="pkg-side">
+              <button className={`pkg-file ${sel === 'SKILL.md' ? 'on' : ''}`} onClick={() => setSel('SKILL.md')}>
+                <span className="pkg-file-name">SKILL.md</span>
+                <span className="pkg-file-tag on">主指令</span>
+              </button>
+
+              <div className="pkg-side-group">
+                <div className="pkg-side-title">
+                  references/ <span>{pkg.references?.length || 0}</span>
+                </div>
+                {(pkg.references || []).map((r: any) => (
+                  <button
+                    key={r.path}
+                    className={`pkg-file ${sel === r.path ? 'on' : ''}`}
+                    onClick={() => setSel(r.path)}
+                  >
+                    <span className="pkg-file-name">{r.path.replace('references/', '')}</span>
+                    <span className="pkg-file-chars">{r.chars}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="pkg-side-group">
+                <div className="pkg-side-title">
+                  scripts/ <span>{pkg.scripts?.length || 0}</span>
+                </div>
+                {(pkg.scripts || []).map((s: any) => (
+                  <button
+                    key={s.path}
+                    className={`pkg-file ${sel === s.path ? 'on' : ''}`}
+                    onClick={() => setSel(s.path)}
+                  >
+                    <span className="pkg-file-name">{s.name}</span>
+                    <span className="pkg-file-tag run">只执行</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="pkg-side-group">
+                <div className="pkg-side-title">
+                  assets/ <span>{pkg.assets?.length || 0}</span>
+                </div>
+                {(pkg.assets || []).map((a: any) => (
+                  <button
+                    key={a.path}
+                    className={`pkg-file ${sel === a.path ? 'on' : ''}`}
+                    onClick={() => setSel(a.path)}
+                  >
+                    <span className="pkg-file-name">{a.path.replace('assets/', '')}</span>
+                    <span className="pkg-file-chars">{a.chars}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="pkg-main">
+              <div className="pkg-main-head">
+                <span className="pkg-main-path">{sel}</span>
+                <span className="pkg-main-meta">{file?.chars ?? 0} 字</span>
+                {file?.humanOnly && <span className="mono-tag">界面查看 · 模型不读</span>}
+              </div>
+
+              {activeScript && (
+                <div className="pkg-run">
+                  <div className="pkg-run-head">
+                    <b>{activeScript.title}</b>
+                    <span className="pkg-run-meta">
+                      超时 {activeScript.timeoutMs}ms · 网络 {activeScript.network ? '开启' : '关闭'} · 副作用{' '}
+                      {activeScript.sideEffect}
+                    </span>
+                  </div>
+                  <div className="pkg-run-sub">{activeScript.when}</div>
+                  <div className="pkg-run-args">
+                    <span className="mini-label">参数（按 args schema 校验）</span>
+                    <textarea
+                      className="input mono"
+                      value={argsText}
+                      onChange={(e) => setArgsText(e.target.value)}
+                      spellCheck={false}
+                      style={{ minHeight: 92, fontSize: 11 }}
+                    />
+                  </div>
+                  <div className="pkg-run-actions">
+                    <button className="btn btn-primary btn-sm" onClick={runIt} disabled={busy}>
+                      {busy ? '执行中…' : '运行脚本'}
+                    </button>
+                    <span className="pkg-run-hint">
+                      走的是运行时同一条执行链路：白名单 + 参数校验 + 超时 + 最小环境
+                    </span>
+                  </div>
+                  {err && <div className="note warn">{err}</div>}
+                  {runOut && (
+                    <div className="pkg-run-out">
+                      <div className="pkg-run-out-head">
+                        <span>
+                          退出码 <b>{runOut.exitCode}</b>
+                        </span>
+                        <span>{runOut.durationMs} ms</span>
+                        <span>
+                          源码 {runOut.scriptChars} 字未进上下文 / 输出 {runOut.outputChars} 字回传
+                        </span>
+                      </div>
+                      <pre className="json-view">{runOut.stdout || runOut.stderr}</pre>
+                    </div>
+                  )}
+
+                  <div className="pkg-src">
+                    <button className="cfg-hint-btn" onClick={() => setShowSrc(!showSrc)}>
+                      {showSrc ? '收起源码' : '查看脚本源码（仅界面可见，模型不读）'}
+                    </button>
+                    {showSrc && file?.text && <pre className="json-view pkg-file-view">{file.text}</pre>}
+                  </div>
+                </div>
+              )}
+
+              {!activeScript && file && (
+                <pre className="json-view pkg-file-view">{file.text}</pre>
+              )}
+              {!activeScript && !file && <div className="note">读取中…</div>}
+            </div>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/** 「本次实际发送给 LLM 的完整工具 Schema」面板 */
+export function ToolSchemaModal({
+  cfg,
+  lastPromptEvent,
+  onClose,
+}: {
+  cfg: any;
+  lastPromptEvent: any;
+  onClose: () => void;
+}) {
+  const [preview, setPreview] = useState<any>(null);
+  const [tab, setTab] = useState<'tools' | 'body' | 'explain'>('tools');
+  const [openTool, setOpenTool] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // 预览用的配置必须用真实字段名，后端直接读 cfg.functionCalling / cfg.tools
+  const key = JSON.stringify({
+    functionCalling: cfg.functionCalling,
+    tools: cfg.tools,
+    mcpMode: cfg.mcpMode,
+    skill: cfg.skill,
+    skillRefs: cfg.skillRefs,
+    skillScripts: cfg.skillScripts,
+    systemPrompt: { enabled: cfg.systemPrompt?.enabled, text: cfg.systemPrompt?.text },
+    temperature: cfg.temperature,
+  });
+
+  useEffect(() => {
+    let alive = true;
+    setErr(null);
+    api
+      .toolSchema(JSON.parse(key))
+      .then((p) => alive && setPreview(p))
+      .catch((e) => alive && setErr(e.message));
+    return () => {
+      alive = false;
+    };
+  }, [key]);
+
+  const actual = lastPromptEvent?.payload || null;
+  const defs: any[] = actual?.toolsSchema || preview?.defs || [];
+  const body: any = actual?.requestBody || preview?.body || null;
+  const isActual = Boolean(actual?.toolsSchema);
+
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="本次实际发送给 LLM 的工具定义"
+      sub={
+        isActual
+          ? '来源：本次运行的「构建模型请求」事件，就是请求体里真实的 tools 字段'
+          : '来源：按当前能力配置即时预览（尚未运行）。点「运行」后这里会换成实际发出的那一份'
+      }
+      onClose={onClose}
+      xwide
+      footer={
+        <>
+          <span className="mini-label" style={{ marginRight: 'auto' }}>
+            工具 {defs.length} 个 · schema {JSON.stringify(defs).length} 字 · 请求体{' '}
+            {body ? JSON.stringify(body).length : 0} 字
+          </span>
+          <button className="btn btn-ghost" onClick={() => copy(JSON.stringify(defs, null, 2))}>
+            {copied ? '已复制' : '复制 tools JSON'}
+          </button>
+          <button className="btn btn-primary" onClick={onClose}>
+            关闭
+          </button>
+        </>
+      }
+    >
+      <div className="seg" style={{ marginBottom: 12 }}>
+        <button className={tab === 'tools' ? 'on' : ''} onClick={() => setTab('tools')}>
+          工具清单（{defs.length}）
+        </button>
+        <button className={tab === 'body' ? 'on' : ''} onClick={() => setTab('body')}>
+          完整请求体
+        </button>
+        <button className={tab === 'explain' ? 'on' : ''} onClick={() => setTab('explain')}>
+          这说明什么
+        </button>
+      </div>
+
+      {err && <div className="note warn">{err}</div>}
+
+      {tab === 'explain' && (
+        <div className="schema-explain">
+          <div className="se-item">
+            <b>工具没有装进模型里</b>
+            <span>
+              模型权重里没有任何一个工具。每一次请求，应用都把下面这份 JSON 放在 <code>tools</code> 字段里一起发出去；
+              模型只是在这次请求给定的清单里，决定要不要发起调用。
+            </span>
+          </div>
+          <div className="se-item">
+            <b>清单是每次请求重新递给它的</b>
+            <span>
+              所以「这次勾了哪些工具」直接决定「模型这次能做什么」。不勾，模型就只能凭已有参数回答；勾了，它才有资格提请求。
+            </span>
+          </div>
+          <div className="se-item">
+            <b>提请求 ≠ 会执行</b>
+            <span>
+              模型输出只是 <code>tool_calls</code> 这一段结构化文本。真正的执行发生在应用侧：权限校验、参数校验、
+              选择本地函数还是 MCP Server，全部由应用决定。
+            </span>
+          </div>
+          <div className="se-item">
+            <b>schema 决定了模型的「理解上限」</b>
+            <span>
+              <code>description</code> 写得含糊，模型就会调错；<code>parameters</code> 没写清楚枚举与必填，模型就会给错参数。
+              工具好不好用，一半在实现，一半在这段说明。
+            </span>
+          </div>
+          <div className="se-item">
+            <b>为什么 schema 也占上下文</b>
+            <span>
+              这份 JSON 会随请求一起进入模型的输入。工具越多、说明越长，占用的输入 token 越多——
+              这也是为什么 MCP 场景下要控制工具数量，而不是一次性挂上几十个。
+            </span>
+          </div>
+          {preview?.skillBlocked && <div className="note warn">{preview.skillBlocked}</div>}
+        </div>
+      )}
+
+      {tab === 'tools' && (
+        <>
+          {!defs.length ? (
+            <div className="note">
+              本次请求不带 <code>tools</code> 参数。模型拿不到任何工具定义，只能凭已有参数回答。
+              <br />
+              打开「工具调用 Function Calling」并勾选工具后，再回来这里就能看到真实的清单。
+            </div>
+          ) : (
+            <div className="schema-tools">
+              {defs.map((d: any) => {
+                const name = d.function?.name || '';
+                const open = openTool === name;
+                return (
+                  <div className={`schema-tool ${open ? 'open' : ''}`} key={name}>
+                    <button className="schema-tool-head" onClick={() => setOpenTool(open ? null : name)}>
+                      <span className="schema-tool-name">{name}</span>
+                      <span className="schema-tool-desc">{d.function?.description?.slice(0, 90)}</span>
+                      <span className="schema-tool-toggle">{open ? '−' : '+'}</span>
+                    </button>
+                    {open && (
+                      <pre className="json-view">{JSON.stringify(d.function?.parameters, null, 2)}</pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div className="mini-label" style={{ margin: '14px 0 6px' }}>
-            SKILL.md 正文（就是上面第 3 步才读取的内容）
+            完整 tools 数组（就是请求体里那一段）
           </div>
-          <div className="json-view" style={{ fontFamily: 'inherit', fontSize: 12, lineHeight: 1.8, maxHeight: 340, overflowY: 'auto' }}>
-            {skill.body}
+          <pre className="json-view schema-json">{JSON.stringify(defs, null, 2)}</pre>
+        </>
+      )}
+
+      {tab === 'body' && (
+        <>
+          <div className="note" style={{ marginBottom: 8 }}>
+            {isActual
+              ? '这是本次运行真实 POST 给 /chat/completions 的请求体。messages 里能看到上下文是怎么拼出来的。'
+              : '这是按当前配置组装出的请求体预览，消息内容用占位符代替。'}
           </div>
+          <pre className="json-view schema-json">{JSON.stringify(body, null, 2)}</pre>
         </>
       )}
     </Modal>

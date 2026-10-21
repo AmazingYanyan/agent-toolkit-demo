@@ -17,6 +17,8 @@ export const BASE_CONFIG: RunConfig = {
   topK: 4,
   skill: null,
   skillAuto: false,
+  skillRefs: true,
+  skillScripts: true,
   maxToolRounds: 4,
 };
 
@@ -79,8 +81,15 @@ export const CHAPTERS: Chapter[] = [
     no: '07',
     title: 'Skill 与专家经验',
     question:
-      '根据以下数据分析企业风险：2024 年营业收入 1000 万元，2025 年营业收入 800 万元，2025 年经营活动现金流量净额 -100 万元。',
-    preset: { skill: null, skillAuto: false, functionCalling: false, tools: [] },
+      '根据以下数据分析企业风险：2024 年营业收入 1000 万元，2025 年营业收入 800 万元；2025 年总资产 1000 万元、总负债 750 万元；2025 年经营活动现金流量净额 -100 万元。',
+    preset: {
+      skill: 'financial-risk',
+      skillAuto: false,
+      functionCalling: true,
+      tools: [],
+      skillRefs: true,
+      skillScripts: true,
+    },
   },
   {
     id: 'ch08',

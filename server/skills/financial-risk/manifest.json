@@ -1,0 +1,82 @@
+{
+  "id": "financial-risk",
+  "name": "财务风险提示分析",
+  "version": "2.0.0",
+  "note": "资源清单同时是执行白名单：只有这里登记的文件可被读取，只有这里登记的脚本可被执行。",
+  "references": [
+    {
+      "path": "references/solvency.md",
+      "title": "偿债能力分析方法",
+      "when": "涉及资产负债率、流动比率、利息保障倍数、短期偿付压力时",
+      "triggers": ["资产负债率", "偿债", "负债", "流动比率", "偿付", "还债", "杠杆"],
+      "seeAlso": ["references/indicator-guide.md"]
+    },
+    {
+      "path": "references/profitability.md",
+      "title": "盈利能力与收入质量分析方法",
+      "when": "涉及营业收入变动、毛利率、净利率、收入真实性时",
+      "triggers": ["营业收入", "收入", "毛利", "净利", "盈利", "同比"]
+    },
+    {
+      "path": "references/cashflow.md",
+      "title": "现金流分析方法",
+      "when": "涉及经营活动现金流净额、现金流为负、资金链、回款质量时",
+      "triggers": ["现金流", "经营现金流", "资金链", "回款", "现金"]
+    },
+    {
+      "path": "references/indicator-guide.md",
+      "title": "财务指标定义与口径说明",
+      "when": "需要说明某个指标怎么算、口径差异、可比性时",
+      "triggers": ["指标", "口径", "定义", "怎么算", "公式"]
+    }
+  ],
+  "scripts": [
+    {
+      "name": "calculate_ratios.py",
+      "title": "确定性财务指标计算与阈值判定",
+      "when": "需要计算资产负债率、营业收入同比变动率，或判断演示阈值是否触发时",
+      "args": {
+        "type": "object",
+        "properties": {
+          "assets": { "type": "number", "description": "本期总资产（万元）" },
+          "liabilities": { "type": "number", "description": "本期总负债（万元）" },
+          "revenue_current": { "type": "number", "description": "本期营业收入（万元）" },
+          "revenue_prior": { "type": "number", "description": "上期营业收入（万元）" },
+          "ocf": { "type": "number", "description": "本期经营活动现金流量净额（万元），可为负数" }
+        },
+        "required": []
+      },
+      "timeoutMs": 5000,
+      "network": false,
+      "sideEffect": "none",
+      "outputFormat": "JSON：debt_asset_ratio / revenue_yoy / ocf_negative / thresholds / notes"
+    },
+    {
+      "name": "validate_data.py",
+      "title": "输入数据完整性与合理性校验",
+      "when": "拿到财务数据后、开始分析前，用于确认字段是否齐全、数值是否自相矛盾",
+      "args": {
+        "type": "object",
+        "properties": {
+          "assets": { "type": "number", "description": "本期总资产（万元）" },
+          "liabilities": { "type": "number", "description": "本期总负债（万元）" },
+          "revenue_current": { "type": "number", "description": "本期营业收入（万元）" },
+          "revenue_prior": { "type": "number", "description": "上期营业收入（万元）" },
+          "ocf": { "type": "number", "description": "本期经营活动现金流量净额（万元）" }
+        },
+        "required": []
+      },
+      "timeoutMs": 5000,
+      "network": false,
+      "sideEffect": "none",
+      "outputFormat": "JSON：complete / missing / issues"
+    }
+  ],
+  "assets": [
+    {
+      "path": "assets/report-template.md",
+      "title": "风险提示报告输出模板",
+      "when": "需要严格按行内报告格式输出时"
+    }
+  ]
+}

@@ -42,6 +42,8 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
   const edges: ArchEdge[] = [];
   const pb = promptBuilderActive(cfg);
   const toolsOn = Boolean(cfg.functionCalling);
+  // Skill 能力包：只要开启任意一路按需通道，就画出能力包节点
+  const pkgOn = Boolean(cfg.skill) && (cfg.skillRefs !== false || cfg.skillScripts !== false);
 
   const mcpIds = [...new Set(toolNames.map((t) => serverIdOf(t)).filter(Boolean))] as string[];
   // 兼容旧开关：打开「通过 MCP 接入」时，本地同名工具走演示 MCP
@@ -65,7 +67,7 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
       label: 'Prompt 构建',
       sub: '拼接指令 · 上下文 · 检索片段',
       x: COL.mid,
-      y: 152,
+      y: pkgOn ? 172 : 152,
       w: 152,
       h: 66,
       tone: 'capability',
@@ -80,21 +82,37 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
       label: 'Skill 索引',
       sub: '只存元数据 · 常驻内存',
       x: COL.user,
-      y: 112,
+      y: 88,
       w: 116,
-      h: 62,
+      h: 54,
       tone: 'resource',
     });
     push({
       id: 'skill_loader',
       label: 'Skill 加载器',
-      sub: '命中后才读正文',
-      x: 184,
-      y: 118,
-      w: 140,
-      h: 62,
+      sub: '命中后读主指令',
+      x: 168,
+      y: 88,
+      w: 132,
+      h: 54,
       tone: 'capability',
     });
+    if (pkgOn) {
+      const parts = [
+        cfg.skillRefs !== false ? '参考资料' : null,
+        cfg.skillScripts !== false ? '确定性脚本' : null,
+      ].filter(Boolean);
+      push({
+        id: 'skill_package',
+        label: 'Skill 能力包',
+        sub: `${parts.join(' · ')} · 按需触碰`,
+        x: 340,
+        y: 88,
+        w: 160,
+        h: 54,
+        tone: 'resource',
+      });
+    }
   }
 
   if (cfg.rag) {
@@ -178,7 +196,24 @@ export function buildGraph(cfg: RunConfig, toolNames: string[] = [], servers: Mc
   if (cfg.skill) {
     e({ id: 'app->skill_index', from: 'app', to: 'skill_index', kind: 'control', dashed: true, label: '查索引' });
     e({ id: 'skill_index->skill_loader', from: 'skill_index', to: 'skill_loader', kind: 'control', dashed: true, label: '命中才读' });
-    if (pb) e({ id: 'skill_loader->prompt_builder', from: 'skill_loader', to: 'prompt_builder', kind: 'context', label: '注入方法' });
+    if (pkgOn) {
+      e({
+        id: 'skill_loader->skill_package',
+        from: 'skill_loader',
+        to: 'skill_package',
+        kind: 'control',
+        dashed: true,
+        label: '挂载清单',
+      });
+      e({
+        id: 'skill_package->prompt_builder',
+        from: 'skill_package',
+        to: 'prompt_builder',
+        kind: 'context',
+        label: '按需取用',
+      });
+    }
+    if (pb) e({ id: 'skill_loader->prompt_builder', from: 'skill_loader', to: 'prompt_builder', kind: 'context', label: '注入主指令' });
   }
 
   if (cfg.rag) {
@@ -228,6 +263,13 @@ export function eventEdges(evtType: string, cfg: RunConfig, payload: any): strin
       return ['app->skill_index'];
     case 'skill_loaded':
       return ['skill_index->skill_loader', 'skill_loader->prompt_builder'];
+    case 'skill_package_mounted':
+      return ['skill_index->skill_loader', 'skill_loader->skill_package'];
+    case 'skill_resource_read':
+    case 'skill_script_run':
+      return ['skill_loader->skill_package', 'skill_package->prompt_builder'];
+    case 'skill_tools_unavailable':
+      return ['skill_loader->skill_package'];
     case 'rag_search_started':
       return ['app->retriever', 'retriever->kb'];
     case 'rag_search_completed':
@@ -292,6 +334,16 @@ export function eventNodes(evtType: string, cfg: RunConfig, payload: any): { id:
       return [{ id: 'skill_index', status: 'success' }];
     case 'skill_loaded':
       return [{ id: 'skill_loader', status: 'success' }];
+    case 'skill_package_mounted':
+      return [
+        { id: 'skill_loader', status: 'success' },
+        { id: 'skill_package', status: 'success' },
+      ];
+    case 'skill_resource_read':
+    case 'skill_script_run':
+      return [{ id: 'skill_package', status: 'success' }];
+    case 'skill_tools_unavailable':
+      return [{ id: 'skill_package', status: 'skipped' }];
     case 'skill_skipped':
       return [{ id: 'skill_loader', status: 'skipped' }];
     case 'rag_search_started':

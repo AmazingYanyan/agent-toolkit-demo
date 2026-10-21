@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { RunConfig } from '../lib/types';
+import { api } from '../lib/api';
 
 interface Props {
   cfg: RunConfig;
@@ -12,6 +13,7 @@ interface Props {
   onShowPrompt: () => void;
   mcp?: any;
   onOpenMcp: () => void;
+  onOpenToolSchema: () => void;
   onRefreshMcp: () => void;
   onCfgSaved: () => void;
 }
@@ -168,9 +170,27 @@ export default function ConfigPanel({
   onShowPrompt,
   mcp,
   onOpenMcp,
+  onOpenToolSchema,
   onRefreshMcp,
   onCfgSaved,
 }: Props) {
+  const [pkg, setPkg] = useState<any>(null);
+
+  useEffect(() => {
+    if (!cfg.skill) {
+      setPkg(null);
+      return;
+    }
+    let alive = true;
+    api
+      .skill(cfg.skill)
+      .then((p) => alive && setPkg(p))
+      .catch(() => alive && setPkg(null));
+    return () => {
+      alive = false;
+    };
+  }, [cfg.skill]);
+
   const toggleTool = (name: string) => {
     const has = cfg.tools.includes(name);
     onChange({ tools: has ? cfg.tools.filter((t) => t !== name) : [...cfg.tools, name] });
@@ -277,7 +297,7 @@ export default function ConfigPanel({
           <>
             <div className="tool-source-bar">
               <span>
-                本地函数 {LOCAL_TOOLS.length} 个 · MCP {mcpToolCount} 个（{groups.length} 台服务器）
+                执行路径：本地函数 {LOCAL_TOOLS.length} 个 · MCP 工具 {mcpToolCount} 个（{groups.length} 台服务器）
               </span>
               <span style={{ display: 'flex', gap: 5 }}>
                 <button className="cfg-hint-btn" onClick={onRefreshMcp}>
@@ -289,6 +309,33 @@ export default function ConfigPanel({
               </span>
             </div>
 
+            <div className="path-note">
+              <div className="path-note-head">工具调用 ≠ MCP。这是两条并列的执行路径</div>
+              <div className="path-note-body">
+                Function Calling 只规定一件事：<b>模型怎么提出调用请求</b>。请求由谁真正执行，有两条路可选：
+              </div>
+              <div className="path-item">
+                <span className="path-no">①</span>
+                <div>
+                  <b>本地函数直接执行</b>
+                  <span className="path-sub">应用进程内的函数，拿到参数就地算完。不经过任何网络，也不需要 MCP。</span>
+                </div>
+              </div>
+              <div className="path-item">
+                <span className="path-no">②</span>
+                <div>
+                  <b>通过 MCP Server 执行</b>
+                  <span className="path-sub">
+                    工具由 MCP Server 用 tools/list 声明，应用走 JSON-RPC tools/call 交给独立进程、内网系统或云端服务执行。
+                  </span>
+                </div>
+              </div>
+              <div className="path-note-foot">
+                下面两组工具分别是这两条路的入口。勾哪一组，模型拿到的清单里就只有哪一组——模型并不知道工具背后是谁在跑。
+              </div>
+            </div>
+
+            <div className="sub-label">① 本地函数（进程内直接执行）</div>
             <div className="sub-row">
               {LOCAL_TOOLS.map((t) => {
                 const on = cfg.tools.includes(t.name);
@@ -304,6 +351,9 @@ export default function ConfigPanel({
               })}
             </div>
 
+            <div className="sub-label" style={{ marginTop: 10 }}>
+              ② MCP 工具（由 MCP Server 声明并执行）
+            </div>
             {groups.length === 0 && (
               <div className="note" style={{ margin: '6px 0' }}>
                 还没有可用的 MCP 服务器。点「管理服务器」可添加远程 MCP 或查看连接失败原因。
@@ -333,16 +383,20 @@ export default function ConfigPanel({
                 tools/call。
               </div>
             )}
+
+            <button className="btn btn-ghost btn-sm schema-btn" onClick={onOpenToolSchema}>
+              查看本次实际发送给 LLM 的完整工具 Schema
+            </button>
           </>
         )}
 
         <Row
-          title="通过 MCP 接入"
-          desc="把同名能力的调用通道切到 MCP Server"
-          detail="同一个「查企业工商信息」既可以写成应用内的函数，也可以由 MCP Server 声明。打开后，勾选的 get_company_info 会改走本地演示 MCP Server 的 tools/call，画布上会多出 MCP Client 与 Server 两跳。它换的是接入方式，不是模型智力。"
+          title="本地演示：同名工具改走 MCP"
+          desc="把查企业工商从「本地函数」换成「MCP 工具」，用来对比两条执行路径"
+          detail="这是给演示准备的对照开关：get_company_info 本来由本地函数直接执行，打开后改由本地演示 MCP Server 的 tools/call 执行。两条路的输入输出完全一样，差别只在「谁在执行、跳了几次协议」。它不改变 Function Calling 的工作方式，也不让模型变聪明——同一份 tools 清单，只是执行端换了个地方。真实场景里 MCP 的价值在于把工具交给外部团队、内网系统或云端统一维护，而不是提升模型能力。"
           on={cfg.mcpMode}
           locked={!cfg.functionCalling}
-          badge={cfg.mcpMode ? '开启' : '关闭'}
+          badge={cfg.mcpMode ? '走 MCP' : '走本地'}
           onToggle={() => onChange({ mcpMode: !cfg.mcpMode })}
         />
       </div>
@@ -419,8 +473,8 @@ export default function ConfigPanel({
 
         <Row
           title="Skill 专家方法"
-          desc="启动只读索引，命中才读正文（按需加载）"
-          detail="Skill 是一份可复用的任务方法说明：适用任务、步骤、数据要求、输出结构、禁止事项。它不是新模型，也不直接提供数据。运行时先在索引里用问题做关键词匹配，命中才读取命中那一个的正文；未命中的 Skill 正文始终留在磁盘上，不进上下文。"
+          desc="启动只读索引，命中才读主指令；资料与脚本再按需取用"
+          detail="Skill 不是一个巨大的说明书，而是一个能力包：SKILL.md 只是入口与路由，具体方法论拆进 references/，确定性计算放进 scripts/，输出模板放进 assets/。这样做的目的是渐进式披露——主指令先把「什么情况下该读什么、跑什么」讲清楚，真正需要时才去取那一份。它不改变模型参数，也不直接提供数据。"
           on={Boolean(cfg.skill)}
           onToggle={() =>
             onChange({
@@ -489,14 +543,134 @@ export default function ConfigPanel({
                   </span>
                 </div>
               </div>
+              <div className="sf-arrow">↓ 模型判断「这次任务需要哪份方法」时</div>
+              <div className="sf-step">
+                <span className="sf-no">4</span>
+                <div>
+                  <b>按需取用资源</b>
+                  <span className="sf-sub">
+                    读哪份 reference、跑哪个脚本，由模型自己发起调用；没取用的内容一个字节都不进上下文
+                  </span>
+                </div>
+              </div>
             </div>
             <div className="cfg-row" style={{ paddingTop: 8 }}>
               <div className="cfg-row-main">
                 <div className="cfg-row-title">按问题自动匹配</div>
-                <div className="cfg-row-desc">关闭时只考虑上面勾选的那一个；打开后在索引里挑最匹配的</div>
+                <div className="cfg-row-desc">
+                  关闭：固定使用上面勾选的那一个，不再做关键词筛选；打开：按问题在索引里挑最匹配的，未达阈值则本次不加载
+                </div>
               </div>
               <Switch on={cfg.skillAuto} onClick={() => onChange({ skillAuto: !cfg.skillAuto })} />
             </div>
+
+            <div className="cfg-row">
+              <div className="cfg-row-main">
+                <div className="cfg-row-title">
+                  按需读取参考资料
+                  <span className="mono-tag">references / assets</span>
+                </div>
+                <div className="cfg-row-desc">
+                  模型主动请求才读，读到哪份才把哪份放进上下文；其余留在磁盘
+                </div>
+              </div>
+              <Switch on={cfg.skillRefs} onClick={() => onChange({ skillRefs: !cfg.skillRefs })} />
+            </div>
+
+            <div className="cfg-row">
+              <div className="cfg-row-main">
+                <div className="cfg-row-title">
+                  按需执行脚本
+                  <span className="mono-tag">scripts</span>
+                </div>
+                <div className="cfg-row-desc">只回传标准输出，脚本源码不进上下文；参数校验、超时、无网络</div>
+              </div>
+              <Switch on={cfg.skillScripts} onClick={() => onChange({ skillScripts: !cfg.skillScripts })} />
+            </div>
+
+            {!cfg.functionCalling && (
+              <div className="note warn" style={{ marginTop: 6 }}>
+                这两路要靠 Function Calling 才触达得到：没开工具调用，模型拿不到
+                <b>读资源</b>、<b>跑脚本</b>两个工具，只能读到 SKILL.md 主指令。这正是 Skill 与 Harness 的分工——
+                Skill 说明「什么情况下该读什么、跑什么」，Harness 提供真正读文件与执行脚本的能力。
+              </div>
+            )}
+
+            {pkg && (
+              <div className="pkg-tree">
+                <div className="pkg-tree-head">
+                  <span>能力包结构</span>
+                  <span className="mono-tag">
+                    全量预载 {pkg.totals?.packageChars ?? 0} 字 · 本次只读 {pkg.totals?.instructionChars ?? 0} 字
+                  </span>
+                </div>
+                <div className="pkg-row core">
+                  <span className="pkg-name">SKILL.md</span>
+                  <span className="pkg-desc">主指令 · 路由说明</span>
+                  <span className="pkg-chars">{pkg.totals?.instructionChars ?? 0} 字</span>
+                  <span className="pkg-badge on">命中即读</span>
+                </div>
+                <div className="pkg-group">
+                  <div className="pkg-group-head">
+                    <span className="pkg-dir">references/</span>
+                    <span className="pkg-group-meta">
+                      {pkg.references?.length || 0} 份 · {pkg.totals?.referenceChars ?? 0} 字
+                    </span>
+                  </div>
+                  {(pkg.references || []).map((r: any) => (
+                    <div className="pkg-row" key={r.path}>
+                      <span className="pkg-name">{r.path.replace('references/', '')}</span>
+                      <span className="pkg-desc" title={r.when}>
+                        {r.title}
+                      </span>
+                      <span className="pkg-chars">{r.chars} 字</span>
+                      <span className="pkg-badge">按需</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="pkg-group">
+                  <div className="pkg-group-head">
+                    <span className="pkg-dir">scripts/</span>
+                    <span className="pkg-group-meta">
+                      {pkg.scripts?.length || 0} 个 · 源码 {pkg.totals?.scriptChars ?? 0} 字
+                    </span>
+                  </div>
+                  {(pkg.scripts || []).map((s: any) => (
+                    <div className="pkg-row" key={s.name}>
+                      <span className="pkg-name">{s.name}</span>
+                      <span className="pkg-desc" title={s.when}>
+                        {s.title}
+                      </span>
+                      <span className="pkg-chars">{s.chars} 字</span>
+                      <span className="pkg-badge">只执行</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="pkg-group">
+                  <div className="pkg-group-head">
+                    <span className="pkg-dir">assets/</span>
+                    <span className="pkg-group-meta">
+                      {pkg.assets?.length || 0} 个 · {pkg.totals?.assetChars ?? 0} 字
+                    </span>
+                  </div>
+                  {(pkg.assets || []).map((a: any) => (
+                    <div className="pkg-row" key={a.path}>
+                      <span className="pkg-name">{a.path.replace('assets/', '')}</span>
+                      <span className="pkg-desc" title={a.when}>
+                        {a.title}
+                      </span>
+                      <span className="pkg-chars">{a.chars} 字</span>
+                      <span className="pkg-badge">按需</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="pkg-tree-foot">
+                  <button className="cfg-hint-btn" onClick={() => onOpenSkill(cfg.skill!)}>
+                    打开能力包，逐个文件看
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

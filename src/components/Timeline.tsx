@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RunEvent } from '../lib/types';
 
 const META: Record<string, { label: (p: any) => string; color: string; icon: string }> = {
@@ -11,13 +11,37 @@ const META: Record<string, { label: (p: any) => string; color: string; icon: str
   },
   skill_matched: {
     label: (p) =>
-      p.matched
-        ? `匹配命中 ${p.name}（${p.score} 分：${(p.hits || []).join('、') || '名称'}）`
-        : `未命中任何 Skill（${p.score} 分 < 阈值 ${p.threshold}），不加载正文`,
+      p.forced
+        ? `指定 Skill：${p.name}，直接加载（关键词得分 ${p.score} 仅供参考）`
+        : p.matched
+          ? `匹配命中 ${p.name}（${p.score} 分：${(p.hits || []).join('、') || '名称'}）`
+          : `未命中任何 Skill（${p.score} 分 < 阈值 ${p.threshold}），不加载正文`,
     color: '#8C6A3F',
     icon: 'S',
   },
-  skill_loaded: { label: (p) => `按需读取正文 ${p.chars} 字并注入上下文`, color: '#2F6F8F', icon: 'S' },
+  skill_loaded: { label: (p) => `读取主指令 SKILL.md：${p.chars} 字`, color: '#2F6F8F', icon: 'S' },
+  skill_package_mounted: {
+    label: (p) =>
+      `挂载能力包：${p.references?.length || 0} 份资料 / ${p.scripts?.length || 0} 个脚本 · 未读 ${p.unreadChars} 字`,
+    color: '#8C6A3F',
+    icon: 'S',
+  },
+  skill_resource_read: {
+    label: (p) => `按需读取资料：${p.title}（${p.chars} 字 · 第 ${p.depth} 层）`,
+    color: '#2F6F8F',
+    icon: '▤',
+  },
+  skill_script_run: {
+    label: (p) =>
+      `执行脚本：${p.name} · 退出码 ${p.exitCode} · 输出 ${p.outputChars} 字（源码 ${p.scriptChars} 字未进上下文）`,
+    color: '#B0762A',
+    icon: '»',
+  },
+  skill_tools_unavailable: {
+    label: (p) => `能力包未接通：未开启 Function Calling，${p.references} 份资料无法按需读取`,
+    color: '#A8AEB7',
+    icon: 'S',
+  },
   skill_skipped: { label: (p) => `本次不加载 Skill，省下 ${p.savedChars} 字上下文`, color: '#A8AEB7', icon: 'S' },
   skill_discovered: { label: (p) => `发现 Skill：${p.name}`, color: '#8C6A3F', icon: 'S' },
   rag_search_started: {
@@ -33,8 +57,16 @@ const META: Record<string, { label: (p: any) => string; color: string; icon: str
     icon: 'R',
   },
   context_dropped: { label: (p) => `丢弃 ${p.droppedMessages} 条历史消息`, color: '#A8AEB7', icon: 'C' },
-  tools_registered: { label: (p) => `注册工具 ${p.names?.length || 0} 个`, color: '#2F6F8F', icon: 'T' },
-  prompt_built: { label: (p) => `构建模型请求（${p.messageCount} 条消息）`, color: '#2F6F8F', icon: 'P' },
+  tools_registered: {
+    label: (p) => `注册工具 ${p.names?.length || 0} 个 · schema ${p.schemaChars || 0} 字`,
+    color: '#2F6F8F',
+    icon: 'T',
+  },
+  prompt_built: {
+    label: (p) => `构建模型请求（${p.messageCount} 条消息 · ${p.tools?.length || 0} 个工具）`,
+    color: '#2F6F8F',
+    icon: 'P',
+  },
   llm_request_started: { label: (p) => `请求 LLM · 第 ${p.round} 轮`, color: '#C9242B', icon: 'L' },
   llm_response_completed: {
     label: (p) => (p.toolCalls?.length ? `模型提出 ${p.toolCalls.length} 个工具调用` : '模型生成最终回答'),
@@ -42,7 +74,11 @@ const META: Record<string, { label: (p: any) => string; color: string; icon: str
     icon: 'L',
   },
   tool_call_requested: { label: (p) => `模型请求工具：${p.toolName}`, color: '#8C6A3F', icon: '→' },
-  permission_checked: { label: (p) => (p.allowed ? '权限校验通过' : '权限校验拒绝'), color: '#4A7C59', icon: '✓' },
+  permission_checked: {
+    label: (p) => (p.allowed ? `权限校验通过（${p.policy || '默认放行'}）` : '权限校验拒绝'),
+    color: '#4A7C59',
+    icon: '✓',
+  },
   tool_call_started: { label: (p) => `执行工具：${p.toolName}`, color: '#8C6A3F', icon: 'E' },
   tool_call_completed: { label: (p) => `工具返回：${p.summary || p.toolName}`, color: '#4A7C59', icon: '✓' },
   tool_call_failed: { label: (p) => `工具失败：${p.toolName}`, color: '#C9242B', icon: '!' },
@@ -62,6 +98,9 @@ const META: Record<string, { label: (p: any) => string; color: string; icon: str
   run_failed: { label: (p) => `运行失败：${p.error}`, color: '#C9242B', icon: '!' },
 };
 
+/** 多轮对话的颜色：按对话顺序循环，一眼区分「这是第几次」 */
+const TURN_COLORS = ['#C9242B', '#2F6F8F', '#4A7C59', '#8C6A3F', '#6B5B95', '#B0762A'];
+
 interface Props {
   events: RunEvent[];
   selectedId: string | null;
@@ -77,30 +116,83 @@ function fmtTime(iso: string) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
 
+function clip(text: string, n = 34) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+}
+
+interface Group {
+  runId: string;
+  index: number;
+  question: string;
+  rows: RunEvent[];
+  durationMs: number | null;
+  status: string;
+}
+
 export default function Timeline({ events, selectedId, onSelect, collapsed, onToggle, running }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
+  const [scope, setScope] = useState<'all' | 'current'>('all');
   const rows = events.filter((e) => e.event_type !== 'llm_output_delta');
+
+  // 按 run_id 分组：每次对话一段，互不覆盖
+  const groups = useMemo<Group[]>(() => {
+    const out: Group[] = [];
+    const map = new Map<string, number>();
+    for (const e of rows) {
+      const rid = e.run_id || 'unknown';
+      if (!map.has(rid)) {
+        map.set(rid, out.length);
+        out.push({ runId: rid, index: out.length, question: '', rows: [], durationMs: null, status: 'ok' });
+      }
+      const g = out[map.get(rid)!];
+      g.rows.push(e);
+      if (e.event_type === 'run_started') g.question = e.payload?.question || '';
+      if (e.event_type === 'run_failed') g.status = 'error';
+    }
+    for (const g of out) {
+      const first = g.rows[0];
+      const last = g.rows[g.rows.length - 1];
+      if (first && last && last.timestamp) {
+        g.durationMs = new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime();
+      }
+    }
+    return out;
+  }, [rows]);
+
+  const currentRunId = groups.length ? groups[groups.length - 1].runId : null;
+  const visible = scope === 'current' ? groups.filter((g) => g.runId === currentRunId) : groups;
+  const colorOf = (gi: number) => TURN_COLORS[gi % TURN_COLORS.length];
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-  }, [rows.length]);
+  }, [rows.length, scope]);
 
-  const start = events.find((e) => e.event_type === 'run_started');
-  const end = [...events].reverse().find((e) => e.event_type === 'run_completed' || e.event_type === 'run_failed');
-  const duration = start && end ? new Date(end.timestamp).getTime() - new Date(start.timestamp).getTime() : null;
+  const totalMs = groups.reduce((n, g) => n + (g.durationMs || 0), 0);
 
   return (
     <div className={`timeline ${collapsed ? 'collapsed' : ''}`}>
       <div className="timeline-head">
         <span className="timeline-title">执行时间线</span>
         <span className="timeline-meta">
+          {groups.length > 1 ? `${groups.length} 次对话 · ` : ''}
           {rows.length} 个事件
-          {duration !== null ? ` · ${(duration / 1000).toFixed(2)}s` : ''}
+          {totalMs ? ` · ${(totalMs / 1000).toFixed(2)}s` : ''}
         </span>
         {running && (
           <span className="run-status" style={{ margin: 0, padding: '2px 8px' }}>
             <span className="spinner" />
           </span>
+        )}
+        {groups.length > 1 && (
+          <div className="tl-scope">
+            <button className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>
+              全部 {groups.length}
+            </button>
+            <button className={scope === 'current' ? 'on' : ''} onClick={() => setScope('current')}>
+              只看本次
+            </button>
+          </div>
         )}
         <button className="timeline-collapse" onClick={onToggle}>
           {collapsed ? '展开' : '收起'}
@@ -118,21 +210,40 @@ export default function Timeline({ events, selectedId, onSelect, collapsed, onTo
               点击右侧「运行」后，这里会按真实执行顺序记录每一步。
             </div>
           ) : (
-            rows.map((e) => {
-              const m = META[e.event_type] || { label: () => e.event_type, color: '#A8AEB7', icon: '·' };
+            visible.map((g) => {
+              const color = colorOf(g.index);
               return (
-                <button
-                  key={e.event_id}
-                  className={`tl-row ${selectedId === e.event_id ? 'sel' : ''}`}
-                  onClick={() => onSelect(e)}
-                >
-                  <span className="tl-time">{fmtTime(e.timestamp)}</span>
-                  <span className="tl-icon" style={{ background: m.color }}>
-                    {m.icon}
-                  </span>
-                  <span className="tl-text">{m.label(e.payload || {})}</span>
-                  <span className="tl-tag">{e.component_id}</span>
-                </button>
+                <div className="tl-turn" key={g.runId} data-status={g.status}>
+                  <div className="tl-turn-head" style={{ borderLeftColor: color }}>
+                    <span className="tl-turn-dot" style={{ background: color }} />
+                    <span className="tl-turn-name">第 {g.index + 1} 次对话</span>
+                    <span className="tl-turn-q" title={g.question}>
+                      {clip(g.question, 30)}
+                    </span>
+                    <span className="tl-turn-meta">
+                      {g.rows.length} 事件
+                      {g.durationMs ? ` · ${(g.durationMs / 1000).toFixed(2)}s` : ''}
+                    </span>
+                  </div>
+                  {g.rows.map((e) => {
+                    const m = META[e.event_type] || { label: () => e.event_type, color: '#A8AEB7', icon: '·' };
+                    return (
+                      <button
+                        key={e.event_id}
+                        className={`tl-row ${selectedId === e.event_id ? 'sel' : ''}`}
+                        onClick={() => onSelect(e)}
+                        style={{ borderLeftColor: color }}
+                      >
+                        <span className="tl-time">{fmtTime(e.timestamp)}</span>
+                        <span className="tl-icon" style={{ background: m.color }}>
+                          {m.icon}
+                        </span>
+                        <span className="tl-text">{m.label(e.payload || {})}</span>
+                        <span className="tl-tag">{e.component_id}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               );
             })
           )}

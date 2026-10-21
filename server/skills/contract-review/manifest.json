@@ -1,0 +1,53 @@
+{
+  "id": "contract-review",
+  "name": "合同条款核对",
+  "version": "2.0.0",
+  "note": "资源清单同时是执行白名单：只有这里登记的文件可被读取，只有这里登记的脚本可被执行。",
+  "references": [
+    {
+      "path": "references/guarantee-clauses.md",
+      "title": "担保与保证条款核对口径",
+      "when": "合同涉及保证人、抵押、质押、连带责任时",
+      "triggers": ["担保", "保证", "抵押", "质押", "连带", "反担保"]
+    },
+    {
+      "path": "references/special-terms.md",
+      "title": "特殊约定与风险条款清单",
+      "when": "合同出现排他、自动续期、单方解约、无限责任等特殊约定时",
+      "triggers": ["排他", "自动续期", "单方解约", "违约金", "特殊约定", "独家"]
+    }
+  ],
+  "scripts": [
+    {
+      "name": "check_clause_coverage.py",
+      "title": "必备条款覆盖检查",
+      "when": "已抽取到合同条款类别，需要判断是否缺少必备条款时",
+      "args": {
+        "type": "object",
+        "properties": {
+          "present": {
+            "type": "string",
+            "description": "已识别到的条款类别，逗号分隔。可选值：party 主体信息, payment 付款节点, breach 违约条款, effective 生效条件, guarantee 担保条款, dispute 争议解决"
+          },
+          "contract_type": {
+            "type": "string",
+            "description": "合同类型：purchase 采购 / service 服务 / lease 租赁 / other 其他",
+            "enum": ["purchase", "service", "lease", "other"]
+          }
+        },
+        "required": ["present"]
+      },
+      "timeoutMs": 5000,
+      "network": false,
+      "sideEffect": "none",
+      "outputFormat": "JSON：present / missing / coverage_rate / required_by_type"
+    }
+  ],
+  "assets": [
+    {
+      "path": "assets/review-checklist.md",
+      "title": "条款核对勾选清单",
+      "when": "需要交付一份可打印的核对清单时"
+    }
+  ]
+}

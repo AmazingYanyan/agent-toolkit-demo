@@ -56,6 +56,10 @@ export interface RunConfig {
   topK: number;
   skill: string | null;
   skillAuto: boolean;
+  /** 允许模型按需读取 skill/references 与 assets（需要 Function Calling） */
+  skillRefs: boolean;
+  /** 允许模型按需执行 skill/scripts 中的已登记脚本（需要 Function Calling） */
+  skillScripts: boolean;
   maxToolRounds: number;
 }
 

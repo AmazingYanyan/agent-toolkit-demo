@@ -6,7 +6,7 @@ import RunPanel, { type Turn } from './components/RunPanel';
 import ConfigPanel from './components/ConfigPanel';
 import ComparePanel from './components/ComparePanel';
 import DetailPanel from './components/DetailPanel';
-import { HealthModal, KbModal, McpModal, NodeModal, PromptModal, SettingsModal, SkillModal } from './components/Modals';
+import { HealthModal, KbModal, McpModal, NodeModal, PromptModal, SettingsModal, SkillModal, ToolSchemaModal } from './components/Modals';
 import { CHAPTERS, chapterConfig, getChapter } from './lib/chapters';
 import { eventEdges, eventNodes } from './lib/layout';
 import type { ArchNode, NodeStatus, RunConfig, RunEvent, RunSummary } from './lib/types';
@@ -49,6 +49,7 @@ export default function App() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [showKb, setShowKb] = useState(false);
   const [showMcp, setShowMcp] = useState(false);
+  const [showToolSchema, setShowToolSchema] = useState(false);
   const [skillId, setSkillId] = useState<string | null>(null);
   const [nodeInfo, setNodeInfo] = useState<ArchNode | null>(null);
 
@@ -217,7 +218,8 @@ export default function App() {
         ...prev,
         { id: turnId, question, answer: '', events: [], stats: null, error: null, status: 'running' },
       ]);
-      setEvents([]);
+      // 注意：这里不再清空 events。时间线要保留历次对话，
+      // 由 Timeline 按 run_id 分组并用颜色区分每一轮。
       setSelectedEvent(null);
       setActiveEdges([]);
       setFocusEdges([]);
@@ -435,6 +437,7 @@ export default function App() {
               onShowPrompt={() => setShowPrompt(true)}
               mcp={mcpStatus}
               onOpenMcp={() => setShowMcp(true)}
+              onOpenToolSchema={() => setShowToolSchema(true)}
               onRefreshMcp={refreshBasics}
               onCfgSaved={refreshBasics}
             />
@@ -448,6 +451,7 @@ export default function App() {
               runStats={runStats}
               snapshot={snapshot || (events.length ? cfg : null)}
               mcpTrace={mcpStatus?.trace || []}
+              onOpenToolSchema={() => setShowToolSchema(true)}
             />
           )}
         </aside>
@@ -470,6 +474,13 @@ export default function App() {
       )}
       {showKb && <KbModal onClose={() => setShowKb(false)} onReload={refreshBasics} />}
       {showMcp && <McpModal onClose={() => setShowMcp(false)} onChanged={refreshBasics} />}
+      {showToolSchema && (
+        <ToolSchemaModal
+          cfg={cfg}
+          lastPromptEvent={[...events].reverse().find((e) => e.event_type === 'prompt_built') || null}
+          onClose={() => setShowToolSchema(false)}
+        />
+      )}
       {skillId && <SkillModal id={skillId} onClose={() => setSkillId(null)} index={skillIndex} />}
       {nodeInfo && <NodeModal node={nodeInfo} onClose={() => setNodeInfo(null)} />}
     </div>
